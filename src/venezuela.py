@@ -3,12 +3,14 @@ Módulo de procesamiento de archivos Excel de Prioridades de Pago - Venezuela
 Implementa procesamiento paralelo con Threads
 """
 import pandas as pd
+import numpy as np
 import threading
 from typing import Optional, Tuple, List, Dict, Any
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime
 import os
+import json
 
 # Configuración de carpeta de resultados
 RESULTADOS_PATH = Path(__file__).parent.parent / 'resultados'
@@ -49,6 +51,44 @@ class ResultadoThread:
         self.excel_result: Optional[Dict] = None
         self.dataframe_error: Optional[str] = None
         self.excel_error: Optional[str] = None
+
+
+def dataframe_a_json_serializable(df: pd.DataFrame) -> List[Dict]:
+    """
+    Convierte un DataFrame a una lista de diccionarios serializables a JSON.
+    Maneja correctamente valores NaT, NaN, Timestamp, etc.
+    
+    Args:
+        df: DataFrame a convertir
+        
+    Returns:
+        Lista de diccionarios serializables
+    """
+    def convertir_valor(val):
+        """Convierte un valor individual a formato serializable."""
+        if pd.isna(val):
+            return None
+        elif isinstance(val, pd.Timestamp):
+            return val.isoformat()
+        elif isinstance(val, datetime):
+            return val.isoformat()
+        elif isinstance(val, np.integer):
+            return int(val)
+        elif isinstance(val, np.floating):
+            return float(val) if not np.isnan(val) else None
+        elif isinstance(val, np.ndarray):
+            return val.tolist()
+        else:
+            return val
+    
+    registros = []
+    for _, row in df.iterrows():
+        registro = {}
+        for col in df.columns:
+            registro[col] = convertir_valor(row[col])
+        registros.append(registro)
+    
+    return registros
 
 
 # ============================================================================
@@ -180,7 +220,7 @@ def procesar_dataframe_thread(file_content: bytes, sheet_name: Optional[str], re
         resultado.dataframe_result = {
             'success': True,
             'stats': stats,
-            'data': df_limpio.to_dict(orient='records'),
+            'data': dataframe_a_json_serializable(df_limpio),
             'df': df_limpio  # Guardar el DataFrame para el thread de Excel
         }
         
