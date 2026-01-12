@@ -13,10 +13,10 @@ import os
 import json
 
 # Importar funciones de tasa de cambio
-from tasa import obtener_tasa_bolivar_dolar, obtener_tasa_euro_dolar
+from tasa import obtener_tasa_bolivar_dolar, obtener_tasa_euro_dolar, obtener_tasa_peso_colombiano_dolar
 
-# Importar conexión a Google Sheets para tabla de áreas
-from connection import get_google_sheet_data
+# Importar conexión a Google Sheets y BigQuery
+from connection import get_google_sheet_data, upload_to_bigquery
 
 # Configuración de carpeta de resultados
 RESULTADOS_PATH = Path(__file__).parent.parent / 'resultados'
@@ -843,10 +843,23 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
     df_result['Monto Total USD'] = monto_capex_usd + monto_opex_usd
     print(f"[THREAD-DF] Columna 'Monto Total USD' calculada")
     
+    # ========================================================================
+    # OBTENER TASA COP/USD
+    # ========================================================================
+    print("[THREAD-DF] Obteniendo tasa COP/USD...")
+    tasa_cop_info = obtener_tasa_peso_colombiano_dolar()
+    if tasa_cop_info['success'] and tasa_cop_info['tasa']:
+        tasa_cop_usd = float(tasa_cop_info['tasa'])
+        print(f"[THREAD-DF] Tasa COP/USD: {tasa_cop_usd}")
+    else:
+        tasa_cop_usd = 0.00024  # Tasa por defecto (1 COP ~ 0.00024 USD)
+        print(f"[THREAD-DF] WARN: Usando tasa COP/USD por defecto: {tasa_cop_usd}")
+    
     # Guardar las tasas en el DataFrame para referencia
     df_result.attrs['tasa_ves_usd'] = tasa_ves_usd
     df_result.attrs['tasa_ves_usd_mas_5'] = tasa_ves_usd_mas_5
     df_result.attrs['tasa_eur_usd'] = tasa_eur_usd
+    df_result.attrs['tasa_cop_usd'] = tasa_cop_usd
     
     print(f"[THREAD-DF] Columnas adicionales completadas: {df_result.shape[1]} columnas totales")
     
@@ -887,11 +900,34 @@ def procesar_dataframe_thread(file_content: bytes, sheet_name: Optional[str], re
                 except:
                     stats['montos'][col] = 0
         
+        # Obtener tasas del DataFrame
+        tasa_ves_usd = df_procesado.attrs.get('tasa_ves_usd', 0)
+        tasa_ves_usd_mas_5 = df_procesado.attrs.get('tasa_ves_usd_mas_5', 0)
+        tasa_eur_usd = df_procesado.attrs.get('tasa_eur_usd', 0)
+        tasa_cop_usd = df_procesado.attrs.get('tasa_cop_usd', 0)
+        
+        # Subir a BigQuery
+        print(f"[{thread_name}] Subiendo datos a BigQuery...")
+        bq_result = upload_to_bigquery(
+            df=df_procesado,
+            tasa_ves_usd=tasa_ves_usd,
+            tasa_ves_usd_mas_5=tasa_ves_usd_mas_5,
+            tasa_eur_usd=tasa_eur_usd,
+            tasa_cop_usd=tasa_cop_usd,
+            write_disposition='WRITE_APPEND'
+        )
+        
+        if bq_result['success']:
+            print(f"[{thread_name}] BigQuery: {bq_result['rows_uploaded']} filas subidas")
+        else:
+            print(f"[{thread_name}] BigQuery ERROR: {bq_result.get('error', 'Unknown error')}")
+        
         resultado.dataframe_result = {
             'success': True,
             'stats': stats,
             'data': dataframe_a_json_serializable(df_procesado),
-            'df': df_procesado  # Guardar el DataFrame para el thread de Excel
+            'df': df_procesado,  # Guardar el DataFrame para el thread de Excel
+            'bigquery': bq_result
         }
         
         print(f"[{thread_name}] Procesamiento de DataFrame completado: {stats['total_filas']} registros")
@@ -1713,6 +1749,9 @@ def procesar_prioridades_pago(file_content: bytes, sheet_name: Optional[str] = N
     # Combinar resultados
     print("[MAIN] Procesamiento completado exitosamente")
     
+    # Obtener resultado de BigQuery si existe
+    bigquery_result = resultado.dataframe_result.get('bigquery', {})
+    
     return {
         'success': True,
         'message': 'Archivo procesado correctamente con threading',
@@ -1721,6 +1760,7 @@ def procesar_prioridades_pago(file_content: bytes, sheet_name: Optional[str] = N
             'filas_procesadas': resultado.dataframe_result['stats']['total_filas']
         },
         'excel': resultado.excel_result['excel_info'],
+        'bigquery': bigquery_result,
         'data': resultado.dataframe_result['data']
     }
 

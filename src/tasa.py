@@ -11,7 +11,7 @@ from datetime import datetime
 
 # URLs de las APIs
 DOLARAPI_VENEZUELA_URL = "https://ve.dolarapi.com/v1/dolares"
-DOLARAPI_COLOMBIA_URL = "https://dolarapi.com/v1/cotizaciones/cop"
+DOLARAPI_COLOMBIA_URL = "https://co.dolarapi.com/v1/cotizaciones/usd"
 FRANKFURTER_EUR_USD_URL = "https://api.frankfurter.app/latest?from=EUR&to=USD"
 
 # Timeout para las peticiones HTTP (segundos)
