@@ -964,13 +964,14 @@ def generar_formula_or_prioridades(col_prioridad: str, prioridades: List[int], e
 
 def crear_excel_con_formulas(df: pd.DataFrame, output_path: Path) -> Dict[str, Any]:
     """
-    Crea un archivo Excel con la hoja 'Detalle' y fórmulas calculadas.
+    Crea un archivo Excel con la hoja 'Detalle' y datos calculados.
+    El DataFrame ya incluye todas las columnas calculadas (Monto Capex Final, Monto Opex Final, etc.)
     """
-    print("[THREAD-EXCEL] Creando Excel con fórmulas...")
+    print("[THREAD-EXCEL] Creando Excel con datos...")
     
-    # Crear el archivo Excel con xlsxwriter para poder agregar fórmulas
+    # Crear el archivo Excel con xlsxwriter para poder agregar formatos y hojas adicionales
     with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
-        # Escribir datos en hoja 'Detalle'
+        # Escribir datos en hoja 'Detalle' (el DataFrame ya incluye todas las columnas calculadas)
         df.to_excel(writer, sheet_name='Detalle', index=False, startrow=0)
         
         workbook = writer.book
@@ -988,11 +989,6 @@ def crear_excel_con_formulas(df: pd.DataFrame, output_path: Path) -> Dict[str, A
         
         money_format = workbook.add_format({
             'num_format': '#,##0.00',
-            'border': 1
-        })
-        
-        date_format = workbook.add_format({
-            'num_format': 'dd/mm/yyyy',
             'border': 1
         })
         
@@ -1016,94 +1012,44 @@ def crear_excel_con_formulas(df: pd.DataFrame, output_path: Path) -> Dict[str, A
             max_length = max(len(str(col_name)), 12)
             worksheet.set_column(col_num, col_num, max_length + 2)
         
-        # Agregar columnas con fórmulas al final
+        # Variables para el Excel
         num_filas = len(df)
         num_cols = len(df.columns)
-        col_formula_idx = num_cols  # Índice para columnas de fórmula
         
-        # Encontrar índices de columnas necesarias
+        # Encontrar índices de columnas (tanto originales como calculadas)
         col_indices = {col: idx for idx, col in enumerate(df.columns)}
         
-        # Columnas originales necesarias
-        moneda_col = col_indices.get('Moneda')
-        prioridad_col = col_indices.get('Prioridad')
-        cuenta_col = col_indices.get('Cuenta')
-        capex_ext_col = col_indices.get('Monto CAPEX EXT')
-        capex_ord_col = col_indices.get('Monto CAPEX ORD')
-        cadm_col = col_indices.get('Monto CADM')
-        monto_col = col_indices.get('Monto')
-        fecha_venc_col = col_indices.get('Fecha Vencimiento')
+        # Columnas calculadas (ya en el DataFrame)
+        moneda_pago_col = col_indices.get('Moneda Pago')
+        cuenta_bancaria_col = col_indices.get('Cuenta Bancaria')
+        dia_pago_col = col_indices.get('Dia de Pago')
+        monto_final_col = col_indices.get('Monto Final')
+        monto_capex_final_col = col_indices.get('Monto Capex Final')
+        monto_opex_final_col = col_indices.get('Monto Opex Final')
+        area_col = col_indices.get('AREA')
+        tipo_capex_2_col = col_indices.get('Tipo Capex 2')
+        tipo_capex_col = col_indices.get('Tipo Capex')
+        monto_capex_ord_2_col = col_indices.get('Monto Capex ORD 2')
+        monto_capex_ext_3_col = col_indices.get('Monto Capex EXT 3')
+        monto_capex_ord_usd_col = col_indices.get('Monto Capex ORD USD')
+        monto_capex_ext_usd_col = col_indices.get('Monto Capex EXT USD')
+        monto_capex_usd_col = col_indices.get('Monto CAPEX USD')
+        monto_opex_usd_col = col_indices.get('Monto OPEX USD')
+        monto_total_usd_col = col_indices.get('Monto Total USD')
         
-        # Letras de columnas originales
-        moneda_letter = indice_a_letra_excel(moneda_col) if moneda_col is not None else None
-        prioridad_letter = indice_a_letra_excel(prioridad_col) if prioridad_col is not None else None
-        cuenta_letter = indice_a_letra_excel(cuenta_col) if cuenta_col is not None else None
+        # Aplicar formato de moneda a las columnas numéricas calculadas
+        columnas_moneda = [
+            monto_final_col, monto_capex_final_col, monto_opex_final_col,
+            monto_capex_ord_2_col, monto_capex_ext_3_col,
+            monto_capex_ord_usd_col, monto_capex_ext_usd_col,
+            monto_capex_usd_col, monto_opex_usd_col, monto_total_usd_col
+        ]
         
-        # ====================================================================
-        # COLUMNA 1: Moneda Pago
-        # Fórmula: =IF(Moneda="EUR","EUR",IF(Moneda="COP","COP",IF(Moneda="USD",IF(OR(Prioridad=69,...),"USD","VES"),"VES")))
-        # ====================================================================
-        col_moneda_pago = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_moneda_pago, 'Moneda Pago', header_format)
-        worksheet.set_column(col_moneda_pago, col_moneda_pago, 14)
+        for col_idx in columnas_moneda:
+            if col_idx is not None:
+                worksheet.set_column(col_idx, col_idx, 18, money_format)
         
-        if moneda_letter and prioridad_letter:
-            for row in range(1, num_filas + 1):
-                excel_row = row + 1
-                or_prioridades = generar_formula_or_prioridades(prioridad_letter, PRIORIDADES_USD_MONEDA_PAGO, excel_row)
-                formula = (
-                    f'=IF({moneda_letter}{excel_row}="EUR","EUR",'
-                    f'IF({moneda_letter}{excel_row}="COP","COP",'
-                    f'IF({moneda_letter}{excel_row}="USD",'
-                    f'IF({or_prioridades},"USD","VES"),"VES")))'
-                )
-                worksheet.write_formula(row, col_moneda_pago, formula, text_format)
-        
-        print(f"[THREAD-EXCEL] Columna 'Moneda Pago' agregada")
-        
-        # ====================================================================
-        # COLUMNA 2: Cuenta Bancaria
-        # Fórmula: =IF(Moneda="USD",IF(OR(Prioridad=69,...),Cuenta,"1111"),Cuenta)
-        # ====================================================================
-        col_cuenta_bancaria = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_cuenta_bancaria, 'Cuenta Bancaria', header_format)
-        worksheet.set_column(col_cuenta_bancaria, col_cuenta_bancaria, 16)
-        
-        if moneda_letter and prioridad_letter and cuenta_letter:
-            for row in range(1, num_filas + 1):
-                excel_row = row + 1
-                or_prioridades = generar_formula_or_prioridades(prioridad_letter, PRIORIDADES_USD_CUENTA_ORIGINAL, excel_row)
-                formula = (
-                    f'=IF({moneda_letter}{excel_row}="USD",'
-                    f'IF({or_prioridades},{cuenta_letter}{excel_row},"{CUENTA_USD_DEFAULT}"),'
-                    f'{cuenta_letter}{excel_row})'
-                )
-                worksheet.write_formula(row, col_cuenta_bancaria, formula, text_format)
-        
-        print(f"[THREAD-EXCEL] Columna 'Cuenta Bancaria' agregada")
-        
-        # ====================================================================
-        # COLUMNA 3: Dia de Pago
-        # Fórmula: =IF(OR(MonedaPago="USD",MonedaPago="EUR"),"VIERNES","JUEVES")
-        # ====================================================================
-        col_dia_pago = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_dia_pago, 'Dia de Pago', header_format)
-        worksheet.set_column(col_dia_pago, col_dia_pago, 12)
-        
-        moneda_pago_letter = indice_a_letra_excel(col_moneda_pago)
-        
-        for row in range(1, num_filas + 1):
-            excel_row = row + 1
-            formula = (
-                f'=IF(OR({moneda_pago_letter}{excel_row}="USD",'
-                f'{moneda_pago_letter}{excel_row}="EUR"),"VIERNES","JUEVES")'
-            )
-            worksheet.write_formula(row, col_dia_pago, formula, text_format)
-        
-        print(f"[THREAD-EXCEL] Columna 'Dia de Pago' agregada")
+        print(f"[THREAD-EXCEL] Columnas del DataFrame escritas: {num_cols} columnas")
         
         # ====================================================================
         # CREAR HOJA "Tasa" CON LAS TASAS DE CAMBIO
@@ -1190,93 +1136,6 @@ def crear_excel_con_formulas(df: pd.DataFrame, output_path: Path) -> Dict[str, A
         
         print(f"[THREAD-EXCEL] Hoja 'Tasa' creada")
         
-        # Referencias a las tasas en la hoja Tasa (para usar en fórmulas)
-        # Tasa!$B$2 = Tasa VES/USD
-        # Tasa!$B$3 = Tasa VES/USD + 5
-        # Tasa!$B$5 = Tasa EUR/USD
-        tasa_normal_ref = "Tasa!$B$2"
-        tasa_mas_5_ref = "Tasa!$B$3"
-        tasa_eur_ref = "Tasa!$B$5"
-        
-        # Letras necesarias para las fórmulas
-        monto_letter = indice_a_letra_excel(monto_col) if monto_col is not None else None
-        dia_pago_letter = indice_a_letra_excel(col_dia_pago)
-        capex_ext_letter = indice_a_letra_excel(capex_ext_col) if capex_ext_col is not None else None
-        capex_ord_letter = indice_a_letra_excel(capex_ord_col) if capex_ord_col is not None else None
-        cadm_letter = indice_a_letra_excel(cadm_col) if cadm_col is not None else None
-        
-        # ====================================================================
-        # COLUMNA 7: Monto Final
-        # Fórmula: =IF(Moneda="VES",Monto,IF(OR(Prioridad=67,...),Monto,IF(DiaPago="JUEVES",Monto*TasaMas5,Monto*TasaNormal)))
-        # ====================================================================
-        col_monto_final = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_monto_final, 'Monto Final', header_format)
-        worksheet.set_column(col_monto_final, col_monto_final, 16)
-        
-        if moneda_letter and prioridad_letter and monto_letter:
-            for row in range(1, num_filas + 1):
-                excel_row = row + 1
-                or_prioridades = generar_formula_or_prioridades(prioridad_letter, PRIORIDADES_MONTO_SIN_CONVERSION, excel_row)
-                formula = (
-                    f'=IF({moneda_letter}{excel_row}="VES",{monto_letter}{excel_row},'
-                    f'IF({or_prioridades},{monto_letter}{excel_row},'
-                    f'IF({dia_pago_letter}{excel_row}="JUEVES",'
-                    f'{monto_letter}{excel_row}*{tasa_mas_5_ref},'
-                    f'{monto_letter}{excel_row}*{tasa_normal_ref})))'
-                )
-                worksheet.write_formula(row, col_monto_final, formula, money_format)
-        
-        monto_final_letter = indice_a_letra_excel(col_monto_final)
-        print(f"[THREAD-EXCEL] Columna 'Monto Final' agregada")
-        
-        # ====================================================================
-        # COLUMNA 8: Monto Capex Final
-        # Fórmula: =IF(AND(CAPEX_EXT=0,CAPEX_ORD=0),0,((CAPEX_EXT+CAPEX_ORD)/(CAPEX_EXT+CAPEX_ORD+CADM))*MontoFinal)
-        # ====================================================================
-        col_monto_capex_final = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_monto_capex_final, 'Monto Capex Final', header_format)
-        worksheet.set_column(col_monto_capex_final, col_monto_capex_final, 18)
-        
-        if capex_ext_letter and capex_ord_letter and cadm_letter:
-            for row in range(1, num_filas + 1):
-                excel_row = row + 1
-                formula = (
-                    f'=IF(AND({capex_ext_letter}{excel_row}=0,{capex_ord_letter}{excel_row}=0),0,'
-                    f'(({capex_ext_letter}{excel_row}+{capex_ord_letter}{excel_row})/'
-                    f'({capex_ext_letter}{excel_row}+{capex_ord_letter}{excel_row}+{cadm_letter}{excel_row}))'
-                    f'*{monto_final_letter}{excel_row})'
-                )
-                worksheet.write_formula(row, col_monto_capex_final, formula, money_format)
-        
-        monto_capex_final_letter = indice_a_letra_excel(col_monto_capex_final)
-        print(f"[THREAD-EXCEL] Columna 'Monto Capex Final' agregada")
-        
-        # ====================================================================
-        # COLUMNA 9: Monto Opex Final
-        # Fórmula: =IF(AND(CAPEX_EXT=0,CAPEX_ORD=0),MontoFinal,(CADM/(CAPEX_EXT+CAPEX_ORD+CADM))*MontoFinal)
-        # ====================================================================
-        col_monto_opex_final = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_monto_opex_final, 'Monto Opex Final', header_format)
-        worksheet.set_column(col_monto_opex_final, col_monto_opex_final, 18)
-        
-        if capex_ext_letter and capex_ord_letter and cadm_letter:
-            for row in range(1, num_filas + 1):
-                excel_row = row + 1
-                formula = (
-                    f'=IF(AND({capex_ext_letter}{excel_row}=0,{capex_ord_letter}{excel_row}=0),'
-                    f'{monto_final_letter}{excel_row},'
-                    f'({cadm_letter}{excel_row}/'
-                    f'({capex_ext_letter}{excel_row}+{capex_ord_letter}{excel_row}+{cadm_letter}{excel_row}))'
-                    f'*{monto_final_letter}{excel_row})'
-                )
-                worksheet.write_formula(row, col_monto_opex_final, formula, money_format)
-        
-        monto_opex_final_letter = indice_a_letra_excel(col_monto_opex_final)
-        print(f"[THREAD-EXCEL] Columna 'Monto Opex Final' agregada")
-        
         # ====================================================================
         # CREAR HOJA "Areas" CON LA TABLA DE ÁREAS
         # ====================================================================
@@ -1307,254 +1166,21 @@ def crear_excel_con_formulas(df: pd.DataFrame, output_path: Path) -> Dict[str, A
             df_areas = pd.DataFrame()
             num_areas = 0
         
-        # Letras adicionales necesarias para AREA
-        proveedor_col = col_indices.get('Proveedor')
-        sucursal_col = col_indices.get('Sucursal')
-        solicitante_col = col_indices.get('Solicitante')
-        
-        proveedor_letter = indice_a_letra_excel(proveedor_col) if proveedor_col is not None else None
-        sucursal_letter = indice_a_letra_excel(sucursal_col) if sucursal_col is not None else None
-        solicitante_letter = indice_a_letra_excel(solicitante_col) if solicitante_col is not None else None
-        
-        # ====================================================================
-        # COLUMNA 10: AREA
-        # Fórmula compleja con múltiples condiciones para RECARGAS y VLOOKUP
-        # ====================================================================
-        col_area = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_area, 'AREA', header_format)
-        worksheet.set_column(col_area, col_area, 15)
-        
-        if proveedor_letter and sucursal_letter and solicitante_letter and num_areas > 0:
-            for row in range(1, num_filas + 1):
-                excel_row = row + 1
-                # Construir fórmula compleja para AREA
-                # Condiciones de RECARGAS
-                cond_digitel = f'AND({proveedor_letter}{excel_row}="CORPORACION DIGITEL, C.A.",OR({sucursal_letter}{excel_row}="POSPAGO FACTURA",{sucursal_letter}{excel_row}="PREPAGO RECARGA"))'
-                cond_netuno = f'AND({proveedor_letter}{excel_row}="NETUNO, C.A.",{sucursal_letter}{excel_row}="RECARGAS")'
-                cond_telefonica1 = f'AND({proveedor_letter}{excel_row}="TELEFÓNICA VENEZOLANA, C.A.",{sucursal_letter}{excel_row}="RECARGAS")'
-                cond_telefonica2 = f'AND({proveedor_letter}{excel_row}="TELEFONICA VENEZOLANA, C.A.",{sucursal_letter}{excel_row}="RECARGAS")'
-                cond_galaxy = f'{proveedor_letter}{excel_row}="GALAXY ENTERTAINMENT DE VENEZUELA, C.A. (SIMPLE TV )"'
-                cond_recargas_movil = f'{proveedor_letter}{excel_row}="RECARGAS MOVIL C.A"'
-                
-                formula = (
-                    f'=IF(OR({cond_digitel},{cond_netuno},{cond_telefonica1},{cond_telefonica2},{cond_galaxy},{cond_recargas_movil}),'
-                    f'"RECARGAS",'
-                    f'IF({solicitante_letter}{excel_row}=0,"SERVICIOS",'
-                    f'IFERROR(VLOOKUP({solicitante_letter}{excel_row},Areas!$A$1:$B${num_areas + 1},2,FALSE),"SERVICIOS")))'
-                )
-                worksheet.write_formula(row, col_area, formula, text_format)
-        
-        area_letter = indice_a_letra_excel(col_area)
-        print(f"[THREAD-EXCEL] Columna 'AREA' agregada")
-        
-        # ====================================================================
-        # COLUMNA 11: Tipo Capex 2
-        # Fórmula: =IF(AREA="RECARGAS","RECARGAS",IF(AND(MontoCapexFinal<>0,MontoOpexFinal<>0),"MIXTA",IF(MontoCapexFinal<>0,"CAPEX","OPEX")))
-        # ====================================================================
-        col_tipo_capex_2 = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_tipo_capex_2, 'Tipo Capex 2', header_format)
-        worksheet.set_column(col_tipo_capex_2, col_tipo_capex_2, 14)
-        
-        for row in range(1, num_filas + 1):
-            excel_row = row + 1
-            formula = (
-                f'=IF({area_letter}{excel_row}="RECARGAS","RECARGAS",'
-                f'IF(AND({monto_capex_final_letter}{excel_row}<>0,{monto_opex_final_letter}{excel_row}<>0),"MIXTA",'
-                f'IF({monto_capex_final_letter}{excel_row}<>0,"CAPEX","OPEX")))'
-            )
-            worksheet.write_formula(row, col_tipo_capex_2, formula, text_format)
-        
-        tipo_capex_2_letter = indice_a_letra_excel(col_tipo_capex_2)
-        print(f"[THREAD-EXCEL] Columna 'Tipo Capex 2' agregada")
-        
-        # ====================================================================
-        # COLUMNA 12: Tipo Capex
-        # Fórmula: =IF(AREA="RECARGAS","RECARGAS",IF(TipoCapex2="OPEX","OPEX",IF(AND(CapexExt<>0,CapexOrd<>0),"MIXTA",IF(CapexExt<>0,"EXT","ORD"))))
-        # ====================================================================
-        col_tipo_capex = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_tipo_capex, 'Tipo Capex', header_format)
-        worksheet.set_column(col_tipo_capex, col_tipo_capex, 14)
-        
-        if capex_ext_letter and capex_ord_letter:
-            for row in range(1, num_filas + 1):
-                excel_row = row + 1
-                formula = (
-                    f'=IF({area_letter}{excel_row}="RECARGAS","RECARGAS",'
-                    f'IF({tipo_capex_2_letter}{excel_row}="OPEX","OPEX",'
-                    f'IF(AND({capex_ext_letter}{excel_row}<>0,{capex_ord_letter}{excel_row}<>0),"MIXTA",'
-                    f'IF({capex_ext_letter}{excel_row}<>0,"EXT","ORD"))))'
-                )
-                worksheet.write_formula(row, col_tipo_capex, formula, text_format)
-        
-        tipo_capex_letter = indice_a_letra_excel(col_tipo_capex)
-        print(f"[THREAD-EXCEL] Columna 'Tipo Capex' agregada")
-        
-        # ====================================================================
-        # COLUMNA 13: Monto Capex ORD 2
-        # Fórmula: =IF(OR(TipoCapex="OPEX",TipoCapex="RECARGAS",TipoCapex="PRESTAMO"),0,
-        #             IF(TipoCapex="EXT",0,IF(TipoCapex="ORD",MontoCapexFinal,MontoCapexFinal*(CapexOrd/(CapexOrd+CapexExt)))))
-        # ====================================================================
-        col_monto_capex_ord_2 = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_monto_capex_ord_2, 'Monto Capex ORD 2', header_format)
-        worksheet.set_column(col_monto_capex_ord_2, col_monto_capex_ord_2, 18)
-        
-        if capex_ext_letter and capex_ord_letter:
-            for row in range(1, num_filas + 1):
-                excel_row = row + 1
-                formula = (
-                    f'=IF(OR({tipo_capex_letter}{excel_row}="OPEX",{tipo_capex_letter}{excel_row}="RECARGAS",{tipo_capex_letter}{excel_row}="PRESTAMO"),0,'
-                    f'IF({tipo_capex_letter}{excel_row}="EXT",0,'
-                    f'IF({tipo_capex_letter}{excel_row}="ORD",{monto_capex_final_letter}{excel_row},'
-                    f'{monto_capex_final_letter}{excel_row}*({capex_ord_letter}{excel_row}/({capex_ord_letter}{excel_row}+{capex_ext_letter}{excel_row})))))'
-                )
-                worksheet.write_formula(row, col_monto_capex_ord_2, formula, money_format)
-        
-        monto_capex_ord_2_letter = indice_a_letra_excel(col_monto_capex_ord_2)
-        print(f"[THREAD-EXCEL] Columna 'Monto Capex ORD 2' agregada")
-        
-        # ====================================================================
-        # COLUMNA 14: Monto Capex EXT 3
-        # Fórmula: =IF(OR(TipoCapex="OPEX",TipoCapex="RECARGAS",TipoCapex="PRESTAMO"),0,
-        #             IF(TipoCapex="ORD",0,IF(TipoCapex="EXT",MontoCapexFinal,MontoCapexFinal*(CapexExt/(CapexOrd+CapexExt)))))
-        # ====================================================================
-        col_monto_capex_ext_3 = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_monto_capex_ext_3, 'Monto Capex EXT 3', header_format)
-        worksheet.set_column(col_monto_capex_ext_3, col_monto_capex_ext_3, 18)
-        
-        if capex_ext_letter and capex_ord_letter:
-            for row in range(1, num_filas + 1):
-                excel_row = row + 1
-                formula = (
-                    f'=IF(OR({tipo_capex_letter}{excel_row}="OPEX",{tipo_capex_letter}{excel_row}="RECARGAS",{tipo_capex_letter}{excel_row}="PRESTAMO"),0,'
-                    f'IF({tipo_capex_letter}{excel_row}="ORD",0,'
-                    f'IF({tipo_capex_letter}{excel_row}="EXT",{monto_capex_final_letter}{excel_row},'
-                    f'{monto_capex_final_letter}{excel_row}*({capex_ext_letter}{excel_row}/({capex_ord_letter}{excel_row}+{capex_ext_letter}{excel_row})))))'
-                )
-                worksheet.write_formula(row, col_monto_capex_ext_3, formula, money_format)
-        
-        monto_capex_ext_3_letter = indice_a_letra_excel(col_monto_capex_ext_3)
-        print(f"[THREAD-EXCEL] Columna 'Monto Capex EXT 3' agregada")
-        
-        # ====================================================================
-        # COLUMNA 15: Monto Capex ORD USD
-        # Fórmula: =IF(MonedaPago="USD",MontoCapexOrd2,IF(MonedaPago="EUR",MontoCapexOrd2*TasaEUR,IF(DiaPago="MARTES",MontoCapexOrd2/TasaVES,MontoCapexOrd2/TasaVES5)))
-        # ====================================================================
-        col_monto_capex_ord_usd = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_monto_capex_ord_usd, 'Monto Capex ORD USD', header_format)
-        worksheet.set_column(col_monto_capex_ord_usd, col_monto_capex_ord_usd, 20)
-        
-        for row in range(1, num_filas + 1):
-            excel_row = row + 1
-            formula = (
-                f'=IF({moneda_pago_letter}{excel_row}="USD",{monto_capex_ord_2_letter}{excel_row},'
-                f'IF({moneda_pago_letter}{excel_row}="EUR",{monto_capex_ord_2_letter}{excel_row}*{tasa_eur_ref},'
-                f'IF({dia_pago_letter}{excel_row}="MARTES",{monto_capex_ord_2_letter}{excel_row}/{tasa_normal_ref},'
-                f'{monto_capex_ord_2_letter}{excel_row}/{tasa_mas_5_ref})))'
-            )
-            worksheet.write_formula(row, col_monto_capex_ord_usd, formula, money_format)
-        
-        monto_capex_ord_usd_letter = indice_a_letra_excel(col_monto_capex_ord_usd)
-        print(f"[THREAD-EXCEL] Columna 'Monto Capex ORD USD' agregada")
-        
-        # ====================================================================
-        # COLUMNA 16: Monto Capex EXT USD
-        # Fórmula: =IF(MonedaPago="USD",MontoCapexExt3,IF(MonedaPago="COP",MontoCapexExt3,IF(MonedaPago="EUR",MontoCapexExt3*TasaEUR,IF(DiaPago="MARTES",MontoCapexExt3/TasaVES,MontoCapexExt3/TasaVES5))))
-        # ====================================================================
-        col_monto_capex_ext_usd = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_monto_capex_ext_usd, 'Monto Capex EXT USD', header_format)
-        worksheet.set_column(col_monto_capex_ext_usd, col_monto_capex_ext_usd, 20)
-        
-        for row in range(1, num_filas + 1):
-            excel_row = row + 1
-            formula = (
-                f'=IF({moneda_pago_letter}{excel_row}="USD",{monto_capex_ext_3_letter}{excel_row},'
-                f'IF({moneda_pago_letter}{excel_row}="COP",{monto_capex_ext_3_letter}{excel_row},'
-                f'IF({moneda_pago_letter}{excel_row}="EUR",{monto_capex_ext_3_letter}{excel_row}*{tasa_eur_ref},'
-                f'IF({dia_pago_letter}{excel_row}="MARTES",{monto_capex_ext_3_letter}{excel_row}/{tasa_normal_ref},'
-                f'{monto_capex_ext_3_letter}{excel_row}/{tasa_mas_5_ref}))))'
-            )
-            worksheet.write_formula(row, col_monto_capex_ext_usd, formula, money_format)
-        
-        monto_capex_ext_usd_letter = indice_a_letra_excel(col_monto_capex_ext_usd)
-        print(f"[THREAD-EXCEL] Columna 'Monto Capex EXT USD' agregada")
-        
-        # ====================================================================
-        # COLUMNA 17: Monto CAPEX USD
-        # Fórmula: =IF(MonedaPago="USD",MontoCapexFinal,IF(MonedaPago="COP",MontoCapexFinal,IF(MonedaPago="EUR",MontoCapexFinal*TasaEUR,IF(DiaPago="MARTES",MontoCapexFinal/TasaVES,MontoCapexFinal/TasaVES5))))
-        # ====================================================================
-        col_monto_capex_usd = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_monto_capex_usd, 'Monto CAPEX USD', header_format)
-        worksheet.set_column(col_monto_capex_usd, col_monto_capex_usd, 18)
-        
-        for row in range(1, num_filas + 1):
-            excel_row = row + 1
-            formula = (
-                f'=IF({moneda_pago_letter}{excel_row}="USD",{monto_capex_final_letter}{excel_row},'
-                f'IF({moneda_pago_letter}{excel_row}="COP",{monto_capex_final_letter}{excel_row},'
-                f'IF({moneda_pago_letter}{excel_row}="EUR",{monto_capex_final_letter}{excel_row}*{tasa_eur_ref},'
-                f'IF({dia_pago_letter}{excel_row}="MARTES",{monto_capex_final_letter}{excel_row}/{tasa_normal_ref},'
-                f'{monto_capex_final_letter}{excel_row}/{tasa_mas_5_ref}))))'
-            )
-            worksheet.write_formula(row, col_monto_capex_usd, formula, money_format)
-        
-        monto_capex_usd_letter = indice_a_letra_excel(col_monto_capex_usd)
-        print(f"[THREAD-EXCEL] Columna 'Monto CAPEX USD' agregada")
-        
-        # ====================================================================
-        # COLUMNA 18: Monto OPEX USD
-        # Fórmula: =IF(MonedaPago="USD",MontoOpexFinal,IF(MonedaPago="EUR",MontoOpexFinal*TasaEUR,IF(DiaPago="MARTES",MontoOpexFinal/TasaVES,MontoOpexFinal/TasaVES5)))
-        # ====================================================================
-        col_monto_opex_usd = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_monto_opex_usd, 'Monto OPEX USD', header_format)
-        worksheet.set_column(col_monto_opex_usd, col_monto_opex_usd, 18)
-        
-        for row in range(1, num_filas + 1):
-            excel_row = row + 1
-            formula = (
-                f'=IF({moneda_pago_letter}{excel_row}="USD",{monto_opex_final_letter}{excel_row},'
-                f'IF({moneda_pago_letter}{excel_row}="EUR",{monto_opex_final_letter}{excel_row}*{tasa_eur_ref},'
-                f'IF({dia_pago_letter}{excel_row}="MARTES",{monto_opex_final_letter}{excel_row}/{tasa_normal_ref},'
-                f'{monto_opex_final_letter}{excel_row}/{tasa_mas_5_ref})))'
-            )
-            worksheet.write_formula(row, col_monto_opex_usd, formula, money_format)
-        
-        monto_opex_usd_letter = indice_a_letra_excel(col_monto_opex_usd)
-        print(f"[THREAD-EXCEL] Columna 'Monto OPEX USD' agregada")
-        
-        # ====================================================================
-        # COLUMNA 19: Monto Total USD
-        # Fórmula: =MontoCapexUSD + MontoOpexUSD
-        # ====================================================================
-        col_monto_total_usd = col_formula_idx
-        col_formula_idx += 1
-        worksheet.write(0, col_monto_total_usd, 'Monto Total USD', header_format)
-        worksheet.set_column(col_monto_total_usd, col_monto_total_usd, 18)
-        
-        for row in range(1, num_filas + 1):
-            excel_row = row + 1
-            formula = f'={monto_capex_usd_letter}{excel_row}+{monto_opex_usd_letter}{excel_row}'
-            worksheet.write_formula(row, col_monto_total_usd, formula, money_format)
-        
-        monto_total_usd_letter = indice_a_letra_excel(col_monto_total_usd)
-        print(f"[THREAD-EXCEL] Columna 'Monto Total USD' agregada")
-        
         # ====================================================================
         # FILA DE TOTALES
         # ====================================================================
         fila_totales = num_filas + 2
         worksheet.write(fila_totales, 0, 'TOTALES', header_format)
         
-        # Agregar fórmulas de suma para columnas de monto originales
-        columnas_suma = ['Monto', 'Monto CAPEX EXT', 'Monto CAPEX ORD', 'Monto CADM']
+        # Lista de columnas numéricas para calcular totales
+        columnas_suma = [
+            'Monto', 'Monto CAPEX EXT', 'Monto CAPEX ORD', 'Monto CADM',
+            'Monto Final', 'Monto Capex Final', 'Monto Opex Final',
+            'Monto Capex ORD 2', 'Monto Capex EXT 3',
+            'Monto Capex ORD USD', 'Monto Capex EXT USD',
+            'Monto CAPEX USD', 'Monto OPEX USD', 'Monto Total USD'
+        ]
+        
         for col_name in columnas_suma:
             if col_name in col_indices:
                 col_idx = col_indices[col_name]
@@ -1562,61 +1188,21 @@ def crear_excel_con_formulas(df: pd.DataFrame, output_path: Path) -> Dict[str, A
                 formula = f'=SUM({col_letter}2:{col_letter}{num_filas + 1})'
                 worksheet.write_formula(fila_totales, col_idx, formula, formula_format)
         
-        # Suma para nuevas columnas (Monto Final, Monto Capex Final, Monto Opex Final)
-        worksheet.write_formula(fila_totales, col_monto_final, 
-                               f'=SUM({monto_final_letter}2:{monto_final_letter}{num_filas + 1})', 
-                               formula_format)
-        worksheet.write_formula(fila_totales, col_monto_capex_final, 
-                               f'=SUM({monto_capex_final_letter}2:{monto_capex_final_letter}{num_filas + 1})', 
-                               formula_format)
-        worksheet.write_formula(fila_totales, col_monto_opex_final, 
-                               f'=SUM({monto_opex_final_letter}2:{monto_opex_final_letter}{num_filas + 1})', 
-                               formula_format)
-        
-        # Suma para nuevas columnas (Monto Capex ORD 2, Monto Capex EXT 3)
-        worksheet.write_formula(fila_totales, col_monto_capex_ord_2, 
-                               f'=SUM({monto_capex_ord_2_letter}2:{monto_capex_ord_2_letter}{num_filas + 1})', 
-                               formula_format)
-        worksheet.write_formula(fila_totales, col_monto_capex_ext_3, 
-                               f'=SUM({monto_capex_ext_3_letter}2:{monto_capex_ext_3_letter}{num_filas + 1})', 
-                               formula_format)
-        
-        # Suma para columnas USD
-        worksheet.write_formula(fila_totales, col_monto_capex_ord_usd, 
-                               f'=SUM({monto_capex_ord_usd_letter}2:{monto_capex_ord_usd_letter}{num_filas + 1})', 
-                               formula_format)
-        worksheet.write_formula(fila_totales, col_monto_capex_ext_usd, 
-                               f'=SUM({monto_capex_ext_usd_letter}2:{monto_capex_ext_usd_letter}{num_filas + 1})', 
-                               formula_format)
-        
-        # Suma para columnas finales USD
-        worksheet.write_formula(fila_totales, col_monto_capex_usd, 
-                               f'=SUM({monto_capex_usd_letter}2:{monto_capex_usd_letter}{num_filas + 1})', 
-                               formula_format)
-        worksheet.write_formula(fila_totales, col_monto_opex_usd, 
-                               f'=SUM({monto_opex_usd_letter}2:{monto_opex_usd_letter}{num_filas + 1})', 
-                               formula_format)
-        worksheet.write_formula(fila_totales, col_monto_total_usd, 
-                               f'=SUM({monto_total_usd_letter}2:{monto_total_usd_letter}{num_filas + 1})', 
-                               formula_format)
-        
         # Freeze panes (fijar encabezado)
         worksheet.freeze_panes(1, 0)
         
-        total_columnas_formula = col_formula_idx - num_cols
-        print(f"[THREAD-EXCEL] Excel creado con {num_filas} filas y {num_cols + total_columnas_formula} columnas")
+        print(f"[THREAD-EXCEL] Excel creado con {num_filas} filas y {num_cols} columnas")
     
     return {
         'file_path': str(output_path),
         'file_name': output_path.name,
         'filas': num_filas,
-        'columnas_originales': num_cols,
-        'columnas_con_formulas': col_formula_idx,
+        'columnas': num_cols,
         'tasas': {
             'tasa_ves_usd': tasa_ves_usd,
             'tasa_ves_usd_mas_5': tasa_ves_usd_mas_5
         },
-        'columnas_agregadas': [
+        'columnas_calculadas': [
             'Moneda Pago',
             'Cuenta Bancaria', 
             'Dia de Pago',
@@ -1650,8 +1236,9 @@ def procesar_excel_thread(file_content: bytes, sheet_name: Optional[str], result
         df = leer_excel_con_cabezales(file_content, sheet_name)
         df_limpio = limpiar_datos(df)
         
-        # NO calculamos las columnas adicionales aquí porque serán fórmulas en Excel
-        # Las columnas se agregarán como fórmulas en crear_excel_con_formulas
+        # Calcular columnas adicionales para tener los valores en el DataFrame
+        # Esto asegura que las columnas Monto Capex Final y Monto Opex Final aparezcan
+        df_procesado = calcular_columnas_adicionales(df_limpio)
         
         # Crear carpeta de resultados si no existe
         RESULTADOS_PATH.mkdir(parents=True, exist_ok=True)
@@ -1661,8 +1248,8 @@ def procesar_excel_thread(file_content: bytes, sheet_name: Optional[str], result
         output_filename = f'Prioridades_Pago_Procesado_{timestamp}.xlsx'
         output_path = RESULTADOS_PATH / output_filename
         
-        # Crear Excel con fórmulas
-        excel_info = crear_excel_con_formulas(df_limpio, output_path)
+        # Crear Excel con el DataFrame procesado (incluye todas las columnas calculadas)
+        excel_info = crear_excel_con_formulas(df_procesado, output_path)
         
         resultado.excel_result = {
             'success': True,
