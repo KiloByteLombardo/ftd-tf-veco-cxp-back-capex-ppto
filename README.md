@@ -1,29 +1,42 @@
 # PPTO Capex Venezuela
 
-API para procesamiento de archivos Excel de Prioridades de Pago.
+API para procesamiento de archivos Excel de Prioridades de Pago (Venezuela). Limpia, transforma y carga datos hacia BigQuery y Google Cloud Storage.
+
+## Arquitectura
+
+El flujo de procesamiento se divide en **dos pasos**:
+
+1. **Paso 1 - Limpiar**: Recibe el Excel crudo, detecta cabezales, limpia datos, calcula columnas adicionales (tasas de cambio, montos convertidos) y devuelve el archivo procesado en GCS `/tmp/`.
+2. **Paso 2 - Upload**: Recibe el archivo procesado, lo monta en un template descargado desde GCS, sube los datos a BigQuery y guarda el Excel final en GCS `/logs/{fecha}/`.
 
 ## Características
 
-- 🔍 **Detección automática de cabezales**: Itera por las filas del Excel para encontrar automáticamente los cabezales
-- 📊 **Procesamiento con Pandas**: Limpieza y validación de datos usando DataFrames
-- ☁️ **Integración GCP**: Conexión a BigQuery y Google Cloud Storage
-- 🔐 **Autenticación flexible**: Usa ADC o archivo credentials.json
+- **Deteccion automatica de cabezales**: Itera por las filas del Excel para encontrar los cabezales esperados
+- **Procesamiento con Pandas**: Limpieza, validacion y transformacion de datos usando DataFrames
+- **Tasas de cambio en tiempo real**: Consulta tasas VES/USD (BCV), EUR/USD y COP/USD desde APIs externas
+- **Integracion GCP**: Conexion a BigQuery, Google Cloud Storage y Google Sheets
+- **Autenticacion flexible**: Soporta ADC (Application Default Credentials) o archivo `credentials.json`
+- **Deploy en Cloud Run**: Script de despliegue automatizado con PowerShell
 
 ## Estructura del Proyecto
 
 ```
 ppto_capex/
 ├── src/
-│   ├── api.py          # Endpoints FastAPI, conexiones a GCP
-│   └── venezuela.py    # Lógica de procesamiento del Excel
-├── resultados/         # Carpeta para outputs
-├── credentials.json    # Credenciales de GCP (opcional)
+│   ├── api.py             # Endpoints Flask, conexiones a GCP, helpers de GCS
+│   ├── venezuela.py       # Logica de procesamiento del Excel (Paso 1 y Paso 2)
+│   ├── connection.py      # Conexion a Google Sheets y subida a BigQuery
+│   └── tasa.py            # Consulta de tasas de cambio (VES, EUR, COP -> USD)
+├── resultados/            # Carpeta local para outputs
+├── credentials.json       # Credenciales de GCP (opcional, no commitear)
+├── .env                   # Variables de entorno
 ├── Dockerfile
 ├── docker-compose.yaml
+├── deploy-ppto-capex-vzla.ps1  # Script de deploy a Cloud Run
 └── requirements.txt
 ```
 
-## Configuración
+## Configuracion
 
 ### Variables de Entorno
 
@@ -32,11 +45,24 @@ Crea un archivo `.env` con las siguientes variables:
 ```env
 GCP_PROJECT_ID=tu-proyecto-gcp
 GCS_BUCKET_NAME=tu-bucket-gcs
-BQ_DATASET=tu_dataset_bigquery
-BQ_TABLE=tu_tabla_bigquery
+BIGQUERY_DATASET=tu_dataset_bigquery
+BIGQUERY_TABLE=tu_tabla_bigquery
+GOOGLE_SHEET_ID=tu_google_sheet_id
+GCS_TEMPLATE_PATH=template/vzla/Plantilla-VZLA-CAPEX-2526.xlsx
+DEBUG=FALSE
 ```
 
-### Autenticación con GCP
+| Variable | Descripcion |
+|----------|-------------|
+| `GCP_PROJECT_ID` | ID del proyecto en Google Cloud |
+| `GCS_BUCKET_NAME` | Nombre del bucket de Cloud Storage |
+| `BIGQUERY_DATASET` | Dataset de BigQuery donde se almacenan los datos |
+| `BIGQUERY_TABLE` | Tabla de BigQuery destino |
+| `GOOGLE_SHEET_ID` | ID del Google Sheet con datos de areas (AREAS VZLA) |
+| `GCS_TEMPLATE_PATH` | Ruta del template Excel dentro del bucket |
+| `DEBUG` | Modo debug (TRUE/FALSE) |
+
+### Autenticacion con GCP
 
 El proyecto usa el siguiente orden de prioridad para credenciales:
 
@@ -45,9 +71,9 @@ El proyecto usa el siguiente orden de prioridad para credenciales:
    gcloud auth application-default login
    ```
 
-2. **credentials.json**: Si ADC no está disponible, busca el archivo en la raíz del proyecto
+2. **credentials.json**: Si ADC no esta disponible, busca el archivo en la raiz del proyecto
 
-## Instalación
+## Instalacion
 
 ### Local
 
@@ -65,29 +91,42 @@ cd src
 python api.py
 ```
 
+La API estara disponible en `http://localhost:9777`.
+
 ### Docker
 
 ```bash
-# Construir y ejecutar
+# Construir y ejecutar con docker-compose
 docker-compose up --build
 
 # Solo construir
 docker build -t ppto-capex-vzla .
 
 # Ejecutar con variables de entorno
-docker run -p 8080:8080 --env-file .env ppto-capex-vzla
+docker run -p 9777:9777 --env-file .env ppto-capex-vzla
 ```
+
+### Deploy a Cloud Run
+
+```powershell
+# Ejecutar el script de despliegue (requiere gcloud CLI configurado)
+.\deploy-ppto-capex-vzla.ps1
+```
+
+El script automatiza: configuracion del proyecto GCP, build con Cloud Build, deploy a Cloud Run y retorna la URL del servicio.
 
 ## Endpoints
 
-| Método | Endpoint | Descripción |
+| Metodo | Endpoint | Descripcion |
 |--------|----------|-------------|
-| GET | `/` | Información de la API |
-| GET | `/health` | Health check |
-| GET | `/test/bigquery` | Probar conexión a BigQuery |
-| GET | `/test/gcs` | Probar conexión a GCS |
-| GET | `/test/connections` | Probar todas las conexiones |
-| POST | `/process/prioridades-pago` | Procesar archivo Excel |
+| GET | `/` | Informacion de la API y listado de endpoints |
+| GET | `/health` | Health check con estado de configuracion |
+| GET | `/test/bigquery` | Probar conexion a BigQuery |
+| GET | `/test/gcs` | Probar conexion a Google Cloud Storage |
+| GET | `/test/connections` | Probar todas las conexiones (BigQuery + GCS) |
+| POST | `/process/prioridades-pago` | **Paso 1**: Limpiar archivo Excel |
+| POST | `/process/prioridades-pago/upload` | **Paso 2**: Montar en template y subir a BigQuery |
+| GET | `/logs` | Listar archivos procesados agrupados por fecha |
 
 ## Uso
 
@@ -95,38 +134,99 @@ docker run -p 8080:8080 --env-file .env ppto-capex-vzla
 
 ```bash
 # Health check
-curl http://localhost:8080/health
+curl http://localhost:9777/health
 
 # Test BigQuery
-curl http://localhost:8080/test/bigquery
+curl http://localhost:9777/test/bigquery
 
 # Test GCS
-curl http://localhost:8080/test/gcs
+curl http://localhost:9777/test/gcs
 
 # Test todas las conexiones
-curl http://localhost:8080/test/connections
+curl http://localhost:9777/test/connections
 ```
 
-### Procesar archivo Excel
+### Paso 1 - Limpiar archivo Excel
+
+Envia el archivo Excel crudo. La API lo limpia, calcula columnas adicionales y devuelve la URL del archivo procesado en GCS.
 
 ```bash
-curl -X POST http://localhost:8080/process/prioridades-pago \
+curl -X POST http://localhost:9777/process/prioridades-pago \
   -F "file=@Prioridades de Pago.xlsx"
 ```
 
-## Lógica de Procesamiento (venezuela.py)
+**Respuesta exitosa:**
+```json
+{
+  "success": true,
+  "message": "Archivo procesado correctamente (Paso 1)",
+  "file_url": "https://storage.googleapis.com/bucket/tmp/archivo.xlsx",
+  "file_name": "Prioridades_Pago_Procesado_20260210_120000.xlsx",
+  "gcs_path": "gs://bucket/tmp/archivo.xlsx",
+  "stats": { ... }
+}
+```
 
-El módulo `venezuela.py` contiene la lógica de procesamiento:
+### Paso 2 - Montar en template y subir a BigQuery
 
-1. **`encontrar_cabezales()`**: Itera por las filas buscando la fila de cabezales
-2. **`leer_excel_con_cabezales()`**: Lee el Excel con los cabezales detectados
-3. **`limpiar_datos()`**: Elimina filas/columnas vacías, normaliza nombres
-4. **`validar_estructura()`**: Valida que el archivo tenga la estructura correcta
-5. **`procesar_prioridades_pago()`**: Función main que orquesta todo el procesamiento
+Envia el archivo procesado del Paso 1. La API descarga el template desde GCS, monta los datos, sube a BigQuery y guarda el Excel final en logs.
 
-## Documentación de API
+```bash
+curl -X POST http://localhost:9777/process/prioridades-pago/upload \
+  -F "file=@Prioridades_Pago_Procesado.xlsx"
+```
 
-Una vez ejecutando, accede a la documentación interactiva:
+**Respuesta exitosa:**
+```json
+{
+  "success": true,
+  "message": "Datos montados en template y subidos a BigQuery (Paso 2)",
+  "file_url": "https://storage.googleapis.com/bucket/logs/2026-02-10/archivo.xlsx",
+  "file_name": "Prioridades_Pago_Final_20260210_120000.xlsx",
+  "gcs_path": "gs://bucket/logs/2026-02-10/archivo.xlsx",
+  "bigquery": { "success": true, "rows_uploaded": 150 },
+  "stats": { ... }
+}
+```
 
-- **Swagger UI**: http://localhost:8080/docs
-- **ReDoc**: http://localhost:8080/redoc
+### Listar logs
+
+```bash
+curl http://localhost:9777/logs
+```
+
+Retorna los archivos procesados agrupados por fecha, con URLs de descarga.
+
+## Modulos
+
+### `api.py`
+Servidor Flask con todos los endpoints. Maneja conexiones a GCP (BigQuery, GCS), autenticacion, subida/descarga de archivos y orquestacion del flujo de procesamiento.
+
+### `venezuela.py`
+Logica de procesamiento del Excel de Prioridades de Pago:
+- **`procesar_paso1()`**: Limpieza de datos, deteccion de cabezales, calculo de columnas adicionales (tasas de cambio, montos convertidos, moneda de pago, cuentas bancarias)
+- **`procesar_paso2()`**: Montaje de datos procesados en el template Excel y preparacion para BigQuery
+
+### `connection.py`
+Conexion a servicios de Google:
+- **`get_google_sheet_data()`**: Lee datos del Google Sheet (hoja "AREAS VZLA")
+- **`upload_to_bigquery()`**: Sube DataFrame procesado a BigQuery con mapeo de columnas
+
+### `tasa.py`
+Consulta de tasas de cambio en tiempo real:
+- **`obtener_tasa_bolivar_dolar()`**: Tasa VES/USD desde DolarAPI Venezuela (BCV y paralelo)
+- **`obtener_tasa_euro_dolar()`**: Tasa EUR/USD desde Frankfurter API
+- **`obtener_tasa_peso_colombiano_dolar()`**: Tasa COP/USD desde DolarAPI Colombia
+
+## Stack Tecnologico
+
+| Componente | Tecnologia |
+|------------|-----------|
+| Framework web | Flask 3.0 |
+| Servidor WSGI | Gunicorn 21.2 |
+| Procesamiento de datos | Pandas 2.1, NumPy |
+| Manejo de Excel | openpyxl 3.1, XlsxWriter 3.1 |
+| Google Cloud | BigQuery, Cloud Storage, Sheets |
+| Tasas de cambio | DolarAPI, Frankfurter API |
+| Contenedor | Docker (Python 3.11-slim) |
+| Deploy | Google Cloud Run |
