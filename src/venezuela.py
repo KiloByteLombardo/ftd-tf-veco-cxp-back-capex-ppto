@@ -1,10 +1,10 @@
 """
 Módulo de procesamiento de archivos Excel de Prioridades de Pago - Venezuela
-Implementa procesamiento paralelo con Threads
+Fase 2: Paso 1 (limpiar y devolver) y Paso 2 (montar en template, BigQuery)
 """
 import pandas as pd
 import numpy as np
-import threading
+import openpyxl
 from typing import Optional, Tuple, List, Dict, Any
 from io import BytesIO
 from pathlib import Path
@@ -71,6 +71,72 @@ PRIORIDADES_MONTO_SIN_CONVERSION = [67, 69, 70, 71, 72, 73, 74, 75, 76, 77, 87, 
 MARGEN_TASA_JUEVES = 5
 
 # ============================================================================
+# RENOMBRADO DE COLUMNAS (nombres internos -> nombres de salida en Excel)
+# ============================================================================
+RENOMBRAR_COLUMNAS = {
+    'Tipo Factura': 'Tipo factura',
+    'Id Cta': 'CODIGO CTA',
+    'Método de Pago': 'METODO DE PAGO',
+    'Prioridad': 'Prioridad origen',
+    'Monto Capex ORD 2': 'MONTO CAPEX ORD2',
+    'Monto Capex EXT 3': 'MONTO CAPEX EXT3',
+    'Monto Capex Final': 'MONTO CAPEX FINAL',
+    'Monto Opex Final': 'MONTO OPEX FINAL',
+    'Dia de Pago': 'Día de pago',
+    'Monto Capex ORD USD': 'MONTO CAPEX ORD USD',
+    'Monto Capex EXT USD': 'MONTO CAPEX EXT USD',
+    'Monto Total USD': 'MONTO TOTAL USD',
+    'AREA': 'ÁREA',
+    'Tipo Capex': 'TIPO CAPEX',
+    'Tipo Capex 2': 'CAPEX',
+}
+
+# ============================================================================
+# ORDEN DE COLUMNAS PARA EL EXCEL DE SALIDA (PASO 1)
+# Usa los nombres NUEVOS (después de renombrar)
+# ============================================================================
+ORDEN_COLUMNAS_EXCEL = [
+    'Numero de Factura',
+    'Numero de OC',
+    'Tipo factura',
+    'Nombre Lote',
+    'Proveedor',
+    'RIF',
+    'Fecha Documento',
+    'Tienda',
+    'Sucursal',
+    'Monto',
+    'Moneda',
+    'Fecha Vencimiento',
+    'Cuenta',
+    'CODIGO CTA',
+    'METODO DE PAGO',
+    'Pago Independiente',
+    'Prioridad origen',
+    'Monto CAPEX EXT',
+    'Monto CAPEX ORD',
+    'Monto CADM',
+    'Fecha Creación',
+    'Solicitante',
+    'MONTO CAPEX ORD2',
+    'MONTO CAPEX EXT3',
+    'MONTO CAPEX FINAL',
+    'MONTO OPEX FINAL',
+    'Moneda Pago',
+    'Monto Final',
+    'Cuenta Bancaria',
+    'Día de pago',
+    'MONTO CAPEX ORD USD',
+    'MONTO CAPEX EXT USD',
+    'Monto CAPEX USD',
+    'Monto OPEX USD',
+    'MONTO TOTAL USD',
+    'ÁREA',
+    'TIPO CAPEX',
+    'CAPEX',
+]
+
+# ============================================================================
 # CONFIGURACIÓN PARA COLUMNA AREA (RECARGAS)
 # ============================================================================
 
@@ -89,13 +155,22 @@ PROVEEDORES_RECARGAS_CONDICIONAL = {
 }
 
 
-class ResultadoThread:
-    """Clase para almacenar resultados de los threads."""
-    def __init__(self):
-        self.dataframe_result: Optional[Dict] = None
-        self.excel_result: Optional[Dict] = None
-        self.dataframe_error: Optional[str] = None
-        self.excel_error: Optional[str] = None
+def renombrar_columnas(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Renombra las columnas del DataFrame según RENOMBRAR_COLUMNAS.
+    Es idempotente: si las columnas ya tienen los nombres nuevos, no hace nada.
+    
+    Args:
+        df: DataFrame con columnas a renombrar
+        
+    Returns:
+        DataFrame con columnas renombradas
+    """
+    rename_map = {k: v for k, v in RENOMBRAR_COLUMNAS.items() if k in df.columns}
+    if rename_map:
+        df = df.rename(columns=rename_map)
+        print(f"[PROC] Renombradas {len(rename_map)} columnas")
+    return df
 
 
 def dataframe_a_json_serializable(df: pd.DataFrame) -> List[Dict]:
@@ -145,7 +220,7 @@ def encontrar_cabezales(df_raw: pd.DataFrame, max_filas_busqueda: int = 20) -> T
     Encuentra automáticamente la fila de cabezales iterando por las filas del archivo.
     Busca coincidencias con los cabezales esperados.
     """
-    print("[THREAD-DF] Buscando cabezales automáticamente...")
+    print("[PROC] Buscando cabezales automáticamente...")
     
     for idx in range(min(max_filas_busqueda, len(df_raw))):
         fila = df_raw.iloc[idx]
@@ -155,7 +230,7 @@ def encontrar_cabezales(df_raw: pd.DataFrame, max_filas_busqueda: int = 20) -> T
         coincidencias = sum(1 for v in valores if v in CABEZALES_ESPERADOS)
         
         if coincidencias >= 5:  # Al menos 5 cabezales coinciden
-            print(f"[THREAD-DF] Cabezales encontrados en fila {idx} ({coincidencias} coincidencias)")
+            print(f"[PROC] Cabezales encontrados en fila {idx} ({coincidencias} coincidencias)")
             return idx, valores
     
     # Fallback: buscar fila con más valores string no vacíos
@@ -168,10 +243,10 @@ def encontrar_cabezales(df_raw: pd.DataFrame, max_filas_busqueda: int = 20) -> T
             if strings_count >= len(valores_validos) * 0.5:
                 cabezales = [str(v).strip() if pd.notna(v) else f'Columna_{i}' 
                             for i, v in enumerate(fila)]
-                print(f"[THREAD-DF] Cabezales encontrados en fila {idx} (fallback)")
+                print(f"[PROC] Cabezales encontrados en fila {idx} (fallback)")
                 return idx, cabezales
     
-    print("[THREAD-DF] WARN: No se encontraron cabezales, usando fila 0")
+    print("[PROC] WARN: No se encontraron cabezales, usando fila 0")
     return 0, list(df_raw.columns)
 
 
@@ -179,7 +254,7 @@ def leer_excel_con_cabezales(file_content: bytes, sheet_name: Optional[str] = No
     """
     Lee un archivo Excel y detecta automáticamente los cabezales.
     """
-    print("[THREAD-DF] Leyendo archivo Excel...")
+    print("[PROC] Leyendo archivo Excel...")
     
     df_raw = pd.read_excel(
         BytesIO(file_content),
@@ -187,7 +262,7 @@ def leer_excel_con_cabezales(file_content: bytes, sheet_name: Optional[str] = No
         header=None
     )
     
-    print(f"[THREAD-DF] Archivo leído: {df_raw.shape[0]} filas x {df_raw.shape[1]} columnas")
+    print(f"[PROC] Archivo leído: {df_raw.shape[0]} filas x {df_raw.shape[1]} columnas")
     
     header_idx, cabezales = encontrar_cabezales(df_raw)
     
@@ -197,7 +272,7 @@ def leer_excel_con_cabezales(file_content: bytes, sheet_name: Optional[str] = No
         header=header_idx
     )
     
-    print(f"[THREAD-DF] DataFrame con cabezales: {df.shape[0]} filas x {df.shape[1]} columnas")
+    print(f"[PROC] DataFrame con cabezales: {df.shape[0]} filas x {df.shape[1]} columnas")
     
     return df
 
@@ -206,17 +281,21 @@ def limpiar_datos(df: pd.DataFrame) -> pd.DataFrame:
     """
     Limpia y normaliza los datos del DataFrame.
     """
-    print("[THREAD-DF] Limpiando datos...")
+    print("[PROC] Limpiando datos...")
     
     # Eliminar filas completamente vacías
     df_limpio = df.dropna(how='all')
     filas_eliminadas = len(df) - len(df_limpio)
     
     if filas_eliminadas > 0:
-        print(f"[THREAD-DF] Eliminadas {filas_eliminadas} filas vacías")
+        print(f"[PROC] Eliminadas {filas_eliminadas} filas vacías")
     
-    # Eliminar columnas completamente vacías
-    df_limpio = df_limpio.dropna(axis=1, how='all')
+    # Eliminar columnas completamente vacías, EXCEPTO las de CABEZALES_ESPERADOS
+    cols_vacias = df_limpio.columns[df_limpio.isna().all()]
+    cols_a_eliminar = [col for col in cols_vacias if col not in CABEZALES_ESPERADOS]
+    if cols_a_eliminar:
+        df_limpio = df_limpio.drop(columns=cols_a_eliminar)
+        print(f"[PROC] Eliminadas {len(cols_a_eliminar)} columnas vacías no esperadas")
     
     # Limpiar nombres de columnas
     df_limpio.columns = [
@@ -228,7 +307,20 @@ def limpiar_datos(df: pd.DataFrame) -> pd.DataFrame:
     cols_a_mantener = [col for col in df_limpio.columns if not col.startswith('Unnamed')]
     df_limpio = df_limpio[cols_a_mantener]
     
-    print(f"[THREAD-DF] Datos limpios: {df_limpio.shape[0]} filas x {df_limpio.shape[1]} columnas")
+    # Eliminar filas de resumen (Total de Facturas, Total Facturas, Total) en Numero de Factura
+    if 'Numero de Factura' in df_limpio.columns:
+        valores_factura = df_limpio['Numero de Factura'].astype(str).str.strip().str.upper()
+        mask_total = (
+            valores_factura.str.contains('TOTAL DE FACTURAS', na=False) |
+            valores_factura.str.contains('TOTAL FACTURAS', na=False) |
+            (valores_factura == 'TOTAL')
+        )
+        filas_total = mask_total.sum()
+        if filas_total > 0:
+            df_limpio = df_limpio[~mask_total]
+            print(f"[PROC] Eliminadas {filas_total} filas de resumen (Total/Total Facturas)")
+    
+    print(f"[PROC] Datos limpios: {df_limpio.shape[0]} filas x {df_limpio.shape[1]} columnas")
     
     return df_limpio
 
@@ -243,7 +335,7 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         DataFrame con las columnas adicionales
     """
-    print("[THREAD-DF] Calculando columnas adicionales...")
+    print("[PROC] Calculando columnas adicionales...")
     
     df_result = df.copy()
     
@@ -278,7 +370,7 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
         calcular_moneda_pago(m, p) 
         for m, p in zip(moneda, prioridad)
     ]
-    print(f"[THREAD-DF] Columna 'Moneda Pago' calculada")
+    print(f"[PROC] Columna 'Moneda Pago' calculada")
     
     # ========================================================================
     # COLUMNA 2: Cuenta Bancaria
@@ -303,7 +395,7 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
         calcular_cuenta_bancaria(m, p, c) 
         for m, p, c in zip(moneda, prioridad, cuenta)
     ]
-    print(f"[THREAD-DF] Columna 'Cuenta Bancaria' calculada")
+    print(f"[PROC] Columna 'Cuenta Bancaria' calculada")
     
     # ========================================================================
     # COLUMNA 3: Dia de Pago
@@ -323,23 +415,23 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
         calcular_dia_pago(mp) 
         for mp in df_result['Moneda Pago']
     ]
-    print(f"[THREAD-DF] Columna 'Dia de Pago' calculada")
+    print(f"[PROC] Columna 'Dia de Pago' calculada")
     
     # ========================================================================
     # OBTENER TASA DE CAMBIO VES/USD
     # ========================================================================
-    print("[THREAD-DF] Obteniendo tasa de cambio VES/USD...")
+    print("[PROC] Obteniendo tasa de cambio VES/USD...")
     tasa_info = obtener_tasa_bolivar_dolar()
     
     if tasa_info['success'] and tasa_info['tasa']:
         tasa_ves_usd = float(tasa_info['tasa'])
         tasa_ves_usd_mas_5 = tasa_ves_usd + MARGEN_TASA_JUEVES
-        print(f"[THREAD-DF] Tasa VES/USD: {tasa_ves_usd}, Tasa + 5: {tasa_ves_usd_mas_5}")
+        print(f"[PROC] Tasa VES/USD: {tasa_ves_usd}, Tasa + 5: {tasa_ves_usd_mas_5}")
     else:
         # Tasa por defecto si falla la consulta
         tasa_ves_usd = 36.50
         tasa_ves_usd_mas_5 = 41.50
-        print(f"[THREAD-DF] WARN: Usando tasa por defecto: {tasa_ves_usd}")
+        print(f"[PROC] WARN: Usando tasa por defecto: {tasa_ves_usd}")
     
     # Obtener columnas necesarias para Monto Final
     monto = pd.to_numeric(df_result.get('Monto', pd.Series([0] * len(df_result))), errors='coerce').fillna(0)
@@ -381,7 +473,7 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
         calcular_monto_final(m, p, mto, dp) 
         for m, p, mto, dp in zip(moneda, prioridad, monto, df_result['Dia de Pago'])
     ]
-    print(f"[THREAD-DF] Columna 'Monto Final' calculada")
+    print(f"[PROC] Columna 'Monto Final' calculada")
     
     # Obtener Monto Final como serie para cálculos siguientes
     monto_final = pd.to_numeric(df_result['Monto Final'], errors='coerce').fillna(0)
@@ -416,7 +508,7 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
         calcular_monto_capex_final(ce, co, ca, mf) 
         for ce, co, ca, mf in zip(capex_ext, capex_ord, cadm, monto_final)
     ]
-    print(f"[THREAD-DF] Columna 'Monto Capex Final' calculada")
+    print(f"[PROC] Columna 'Monto Capex Final' calculada")
     
     # ========================================================================
     # COLUMNA 6: Monto Opex Final
@@ -448,12 +540,12 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
         calcular_monto_opex_final(ce, co, ca, mf) 
         for ce, co, ca, mf in zip(capex_ext, capex_ord, cadm, monto_final)
     ]
-    print(f"[THREAD-DF] Columna 'Monto Opex Final' calculada")
+    print(f"[PROC] Columna 'Monto Opex Final' calculada")
     
     # ========================================================================
     # OBTENER TABLA DE ÁREAS DESDE GOOGLE SHEETS
     # ========================================================================
-    print("[THREAD-DF] Obteniendo tabla de áreas desde Google Sheets...")
+    print("[PROC] Obteniendo tabla de áreas desde Google Sheets...")
     try:
         df_areas = get_google_sheet_data()
         # Crear diccionario para búsqueda rápida (Solicitante -> Area)
@@ -467,9 +559,9 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
                 area = row[col_area]
                 if pd.notna(codigo):
                     areas_dict[str(codigo).strip()] = str(area).strip() if pd.notna(area) else "SERVICIOS"
-        print(f"[THREAD-DF] Tabla de áreas cargada: {len(areas_dict)} registros")
+        print(f"[PROC] Tabla de áreas cargada: {len(areas_dict)} registros")
     except Exception as e:
-        print(f"[THREAD-DF] WARN: No se pudo cargar tabla de áreas: {str(e)}")
+        print(f"[PROC] WARN: No se pudo cargar tabla de áreas: {str(e)}")
         df_areas = pd.DataFrame()
         areas_dict = {}
     
@@ -528,7 +620,7 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
         calcular_area(p, s, sol) 
         for p, s, sol in zip(proveedor, sucursal, solicitante)
     ]
-    print(f"[THREAD-DF] Columna 'AREA' calculada")
+    print(f"[PROC] Columna 'AREA' calculada")
     
     # ========================================================================
     # COLUMNA 8: Tipo Capex 2
@@ -558,7 +650,7 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
         calcular_tipo_capex_2(a, mcf, mof) 
         for a, mcf, mof in zip(df_result['AREA'], monto_capex_final, monto_opex_final)
     ]
-    print(f"[THREAD-DF] Columna 'Tipo Capex 2' calculada")
+    print(f"[PROC] Columna 'Tipo Capex 2' calculada")
     
     # ========================================================================
     # COLUMNA 9: Tipo Capex
@@ -593,7 +685,7 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
         calcular_tipo_capex(a, tc2, ce, co) 
         for a, tc2, ce, co in zip(df_result['AREA'], df_result['Tipo Capex 2'], capex_ext, capex_ord)
     ]
-    print(f"[THREAD-DF] Columna 'Tipo Capex' calculada")
+    print(f"[PROC] Columna 'Tipo Capex' calculada")
     
     # ========================================================================
     # COLUMNA 10: Monto Capex ORD 2
@@ -631,7 +723,7 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
         calcular_monto_capex_ord_2(tc, mcf, ce, co) 
         for tc, mcf, ce, co in zip(df_result['Tipo Capex'], monto_capex_final, capex_ext, capex_ord)
     ]
-    print(f"[THREAD-DF] Columna 'Monto Capex ORD 2' calculada")
+    print(f"[PROC] Columna 'Monto Capex ORD 2' calculada")
     
     # ========================================================================
     # COLUMNA 11: Monto Capex EXT 3
@@ -669,19 +761,19 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
         calcular_monto_capex_ext_3(tc, mcf, ce, co) 
         for tc, mcf, ce, co in zip(df_result['Tipo Capex'], monto_capex_final, capex_ext, capex_ord)
     ]
-    print(f"[THREAD-DF] Columna 'Monto Capex EXT 3' calculada")
+    print(f"[PROC] Columna 'Monto Capex EXT 3' calculada")
     
     # ========================================================================
     # OBTENER TASA EUR/USD
     # ========================================================================
-    print("[THREAD-DF] Obteniendo tasa EUR/USD...")
+    print("[PROC] Obteniendo tasa EUR/USD...")
     tasa_eur_info = obtener_tasa_euro_dolar()
     if tasa_eur_info['success'] and tasa_eur_info['tasa']:
         tasa_eur_usd = float(tasa_eur_info['tasa'])
-        print(f"[THREAD-DF] Tasa EUR/USD: {tasa_eur_usd}")
+        print(f"[PROC] Tasa EUR/USD: {tasa_eur_usd}")
     else:
         tasa_eur_usd = 1.10  # Tasa por defecto
-        print(f"[THREAD-DF] WARN: Usando tasa EUR/USD por defecto: {tasa_eur_usd}")
+        print(f"[PROC] WARN: Usando tasa EUR/USD por defecto: {tasa_eur_usd}")
     
     # Obtener series necesarias para las nuevas columnas
     monto_capex_ord_2 = pd.to_numeric(df_result['Monto Capex ORD 2'], errors='coerce').fillna(0)
@@ -721,7 +813,7 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
         calcular_monto_capex_ord_usd(m, mp, dp) 
         for m, mp, dp in zip(monto_capex_ord_2, moneda_pago, dia_pago)
     ]
-    print(f"[THREAD-DF] Columna 'Monto Capex ORD USD' calculada")
+    print(f"[PROC] Columna 'Monto Capex ORD USD' calculada")
     
     # ========================================================================
     # COLUMNA 13: Monto Capex EXT USD
@@ -759,7 +851,7 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
         calcular_monto_capex_ext_usd(m, mp, dp) 
         for m, mp, dp in zip(monto_capex_ext_3, moneda_pago, dia_pago)
     ]
-    print(f"[THREAD-DF] Columna 'Monto Capex EXT USD' calculada")
+    print(f"[PROC] Columna 'Monto Capex EXT USD' calculada")
     
     # ========================================================================
     # COLUMNA 14: Monto CAPEX USD
@@ -797,7 +889,7 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
         calcular_monto_capex_usd(m, mp, dp) 
         for m, mp, dp in zip(monto_capex_final, moneda_pago, dia_pago)
     ]
-    print(f"[THREAD-DF] Columna 'Monto CAPEX USD' calculada")
+    print(f"[PROC] Columna 'Monto CAPEX USD' calculada")
     
     # ========================================================================
     # COLUMNA 15: Monto OPEX USD
@@ -831,7 +923,7 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
         calcular_monto_opex_usd(m, mp, dp) 
         for m, mp, dp in zip(monto_opex_final, moneda_pago, dia_pago)
     ]
-    print(f"[THREAD-DF] Columna 'Monto OPEX USD' calculada")
+    print(f"[PROC] Columna 'Monto OPEX USD' calculada")
     
     # ========================================================================
     # COLUMNA 16: Monto Total USD
@@ -841,19 +933,19 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
     monto_opex_usd = pd.to_numeric(df_result['Monto OPEX USD'], errors='coerce').fillna(0)
     
     df_result['Monto Total USD'] = monto_capex_usd + monto_opex_usd
-    print(f"[THREAD-DF] Columna 'Monto Total USD' calculada")
+    print(f"[PROC] Columna 'Monto Total USD' calculada")
     
     # ========================================================================
     # OBTENER TASA COP/USD
     # ========================================================================
-    print("[THREAD-DF] Obteniendo tasa COP/USD...")
+    print("[PROC] Obteniendo tasa COP/USD...")
     tasa_cop_info = obtener_tasa_peso_colombiano_dolar()
     if tasa_cop_info['success'] and tasa_cop_info['tasa']:
         tasa_cop_usd = float(tasa_cop_info['tasa'])
-        print(f"[THREAD-DF] Tasa COP/USD: {tasa_cop_usd}")
+        print(f"[PROC] Tasa COP/USD: {tasa_cop_usd}")
     else:
         tasa_cop_usd = 0.00024  # Tasa por defecto (1 COP ~ 0.00024 USD)
-        print(f"[THREAD-DF] WARN: Usando tasa COP/USD por defecto: {tasa_cop_usd}")
+        print(f"[PROC] WARN: Usando tasa COP/USD por defecto: {tasa_cop_usd}")
     
     # Guardar las tasas en el DataFrame para referencia
     df_result.attrs['tasa_ves_usd'] = tasa_ves_usd
@@ -861,84 +953,13 @@ def calcular_columnas_adicionales(df: pd.DataFrame) -> pd.DataFrame:
     df_result.attrs['tasa_eur_usd'] = tasa_eur_usd
     df_result.attrs['tasa_cop_usd'] = tasa_cop_usd
     
-    print(f"[THREAD-DF] Columnas adicionales completadas: {df_result.shape[1]} columnas totales")
+    print(f"[PROC] Columnas adicionales completadas: {df_result.shape[1]} columnas totales")
     
     return df_result
 
 
-def procesar_dataframe_thread(file_content: bytes, sheet_name: Optional[str], resultado: ResultadoThread):
-    """
-    Thread 1: Procesa la data en DataFrame.
-    """
-    thread_name = threading.current_thread().name
-    print(f"[{thread_name}] Iniciando procesamiento de DataFrame...")
-    
-    try:
-        # Leer y procesar
-        df = leer_excel_con_cabezales(file_content, sheet_name)
-        df_limpio = limpiar_datos(df)
-        
-        # Calcular columnas adicionales (Moneda Pago, Cuenta Bancaria, Dia de Pago)
-        df_procesado = calcular_columnas_adicionales(df_limpio)
-        
-        # Calcular estadísticas
-        stats = {
-            'total_filas': len(df_procesado),
-            'total_columnas': len(df_procesado.columns),
-            'columnas': list(df_procesado.columns),
-            'montos': {},
-            'resumen_moneda_pago': df_procesado['Moneda Pago'].value_counts().to_dict() if 'Moneda Pago' in df_procesado.columns else {},
-            'resumen_dia_pago': df_procesado['Dia de Pago'].value_counts().to_dict() if 'Dia de Pago' in df_procesado.columns else {}
-        }
-        
-        # Calcular sumas de montos si existen las columnas
-        columnas_monto = ['Monto', 'Monto CAPEX EXT', 'Monto CAPEX ORD', 'Monto CADM']
-        for col in columnas_monto:
-            if col in df_procesado.columns:
-                try:
-                    stats['montos'][col] = float(pd.to_numeric(df_procesado[col], errors='coerce').sum())
-                except:
-                    stats['montos'][col] = 0
-        
-        # Obtener tasas del DataFrame
-        tasa_ves_usd = df_procesado.attrs.get('tasa_ves_usd', 0)
-        tasa_ves_usd_mas_5 = df_procesado.attrs.get('tasa_ves_usd_mas_5', 0)
-        tasa_eur_usd = df_procesado.attrs.get('tasa_eur_usd', 0)
-        tasa_cop_usd = df_procesado.attrs.get('tasa_cop_usd', 0)
-        
-        # Subir a BigQuery
-        print(f"[{thread_name}] Subiendo datos a BigQuery...")
-        bq_result = upload_to_bigquery(
-            df=df_procesado,
-            tasa_ves_usd=tasa_ves_usd,
-            tasa_ves_usd_mas_5=tasa_ves_usd_mas_5,
-            tasa_eur_usd=tasa_eur_usd,
-            tasa_cop_usd=tasa_cop_usd,
-            write_disposition='WRITE_APPEND'
-        )
-        
-        if bq_result['success']:
-            print(f"[{thread_name}] BigQuery: {bq_result['rows_uploaded']} filas subidas")
-        else:
-            print(f"[{thread_name}] BigQuery ERROR: {bq_result.get('error', 'Unknown error')}")
-        
-        resultado.dataframe_result = {
-            'success': True,
-            'stats': stats,
-            'data': dataframe_a_json_serializable(df_procesado),
-            'df': df_procesado,  # Guardar el DataFrame para el thread de Excel
-            'bigquery': bq_result
-        }
-        
-        print(f"[{thread_name}] Procesamiento de DataFrame completado: {stats['total_filas']} registros")
-        
-    except Exception as e:
-        resultado.dataframe_error = str(e)
-        print(f"[{thread_name}] ERROR: {str(e)}")
-
-
 # ============================================================================
-# FUNCIONES DE GENERACIÓN DE EXCEL (Thread 2)
+# FUNCIONES DE GENERACIÓN DE EXCEL
 # ============================================================================
 
 def indice_a_letra_excel(idx: int) -> str:
@@ -962,15 +983,26 @@ def generar_formula_or_prioridades(col_prioridad: str, prioridades: List[int], e
     return f'OR({",".join(condiciones)})'
 
 
-def crear_excel_con_formulas(df: pd.DataFrame, output_path: Path) -> Dict[str, Any]:
+def crear_excel_con_formulas(df: pd.DataFrame) -> Dict[str, Any]:
     """
-    Crea un archivo Excel con la hoja 'Detalle' y datos calculados.
+    Crea un archivo Excel en memoria con la hoja 'Detalle' y datos calculados.
     El DataFrame ya incluye todas las columnas calculadas (Monto Capex Final, Monto Opex Final, etc.)
-    """
-    print("[THREAD-EXCEL] Creando Excel con datos...")
     
-    # Crear el archivo Excel con xlsxwriter para poder agregar formatos y hojas adicionales
-    with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
+    Returns:
+        Dict con excel_bytes y metadata del archivo generado
+    """
+    print("[EXCEL] Creando Excel con datos...")
+    
+    # Renombrar columnas según el mapeo
+    df = renombrar_columnas(df)
+    
+    # Reordenar columnas según el orden deseado (y excluir Banco, Proveedor Remito)
+    columnas_disponibles = [col for col in ORDEN_COLUMNAS_EXCEL if col in df.columns]
+    df = df[columnas_disponibles]
+    
+    # Crear el archivo Excel en memoria con xlsxwriter
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         # Escribir datos en hoja 'Detalle' (el DataFrame ya incluye todas las columnas calculadas)
         df.to_excel(writer, sheet_name='Detalle', index=False, startrow=0)
         
@@ -1019,23 +1051,23 @@ def crear_excel_con_formulas(df: pd.DataFrame, output_path: Path) -> Dict[str, A
         # Encontrar índices de columnas (tanto originales como calculadas)
         col_indices = {col: idx for idx, col in enumerate(df.columns)}
         
-        # Columnas calculadas (ya en el DataFrame)
+        # Columnas calculadas (ya en el DataFrame, con nombres nuevos)
         moneda_pago_col = col_indices.get('Moneda Pago')
         cuenta_bancaria_col = col_indices.get('Cuenta Bancaria')
-        dia_pago_col = col_indices.get('Dia de Pago')
+        dia_pago_col = col_indices.get('Día de pago')
         monto_final_col = col_indices.get('Monto Final')
-        monto_capex_final_col = col_indices.get('Monto Capex Final')
-        monto_opex_final_col = col_indices.get('Monto Opex Final')
-        area_col = col_indices.get('AREA')
-        tipo_capex_2_col = col_indices.get('Tipo Capex 2')
-        tipo_capex_col = col_indices.get('Tipo Capex')
-        monto_capex_ord_2_col = col_indices.get('Monto Capex ORD 2')
-        monto_capex_ext_3_col = col_indices.get('Monto Capex EXT 3')
-        monto_capex_ord_usd_col = col_indices.get('Monto Capex ORD USD')
-        monto_capex_ext_usd_col = col_indices.get('Monto Capex EXT USD')
+        monto_capex_final_col = col_indices.get('MONTO CAPEX FINAL')
+        monto_opex_final_col = col_indices.get('MONTO OPEX FINAL')
+        area_col = col_indices.get('ÁREA')
+        tipo_capex_2_col = col_indices.get('CAPEX')
+        tipo_capex_col = col_indices.get('TIPO CAPEX')
+        monto_capex_ord_2_col = col_indices.get('MONTO CAPEX ORD2')
+        monto_capex_ext_3_col = col_indices.get('MONTO CAPEX EXT3')
+        monto_capex_ord_usd_col = col_indices.get('MONTO CAPEX ORD USD')
+        monto_capex_ext_usd_col = col_indices.get('MONTO CAPEX EXT USD')
         monto_capex_usd_col = col_indices.get('Monto CAPEX USD')
         monto_opex_usd_col = col_indices.get('Monto OPEX USD')
-        monto_total_usd_col = col_indices.get('Monto Total USD')
+        monto_total_usd_col = col_indices.get('MONTO TOTAL USD')
         
         # Aplicar formato de moneda a las columnas numéricas calculadas
         columnas_moneda = [
@@ -1049,7 +1081,7 @@ def crear_excel_con_formulas(df: pd.DataFrame, output_path: Path) -> Dict[str, A
             if col_idx is not None:
                 worksheet.set_column(col_idx, col_idx, 18, money_format)
         
-        print(f"[THREAD-EXCEL] Columnas del DataFrame escritas: {num_cols} columnas")
+        print(f"[EXCEL] Columnas del DataFrame escritas: {num_cols} columnas")
         
         # ====================================================================
         # CREAR HOJA "Tasa" CON LAS TASAS DE CAMBIO
@@ -1069,7 +1101,7 @@ def crear_excel_con_formulas(df: pd.DataFrame, output_path: Path) -> Dict[str, A
         else:
             tasa_eur_usd = 1.10  # Tasa por defecto
         
-        print(f"[THREAD-EXCEL] Tasas obtenidas: VES/USD={tasa_ves_usd}, VES+5={tasa_ves_usd_mas_5}, EUR/USD={tasa_eur_usd}")
+        print(f"[EXCEL] Tasas obtenidas: VES/USD={tasa_ves_usd}, VES+5={tasa_ves_usd_mas_5}, EUR/USD={tasa_eur_usd}")
         
         # Crear hoja "Tasa"
         ws_tasa = workbook.add_worksheet('Tasa')
@@ -1134,12 +1166,12 @@ def crear_excel_con_formulas(df: pd.DataFrame, output_path: Path) -> Dict[str, A
         ws_tasa.set_column(1, 1, 15)
         ws_tasa.set_column(2, 2, 30)
         
-        print(f"[THREAD-EXCEL] Hoja 'Tasa' creada")
+        print(f"[EXCEL] Hoja 'Tasa' creada")
         
         # ====================================================================
         # CREAR HOJA "Areas" CON LA TABLA DE ÁREAS
         # ====================================================================
-        print("[THREAD-EXCEL] Obteniendo tabla de áreas desde Google Sheets...")
+        print("[EXCEL] Obteniendo tabla de áreas desde Google Sheets...")
         try:
             df_areas = get_google_sheet_data()
             
@@ -1160,42 +1192,21 @@ def crear_excel_con_formulas(df: pd.DataFrame, output_path: Path) -> Dict[str, A
                 ws_areas.set_column(col_idx, col_idx, 20)
             
             num_areas = len(df_areas)
-            print(f"[THREAD-EXCEL] Hoja 'Areas' creada con {num_areas} registros")
+            print(f"[EXCEL] Hoja 'Areas' creada con {num_areas} registros")
         except Exception as e:
-            print(f"[THREAD-EXCEL] WARN: No se pudo crear hoja 'Areas': {str(e)}")
+            print(f"[EXCEL] WARN: No se pudo crear hoja 'Areas': {str(e)}")
             df_areas = pd.DataFrame()
             num_areas = 0
-        
-        # ====================================================================
-        # FILA DE TOTALES
-        # ====================================================================
-        fila_totales = num_filas + 2
-        worksheet.write(fila_totales, 0, 'TOTALES', header_format)
-        
-        # Lista de columnas numéricas para calcular totales
-        columnas_suma = [
-            'Monto', 'Monto CAPEX EXT', 'Monto CAPEX ORD', 'Monto CADM',
-            'Monto Final', 'Monto Capex Final', 'Monto Opex Final',
-            'Monto Capex ORD 2', 'Monto Capex EXT 3',
-            'Monto Capex ORD USD', 'Monto Capex EXT USD',
-            'Monto CAPEX USD', 'Monto OPEX USD', 'Monto Total USD'
-        ]
-        
-        for col_name in columnas_suma:
-            if col_name in col_indices:
-                col_idx = col_indices[col_name]
-                col_letter = indice_a_letra_excel(col_idx)
-                formula = f'=SUM({col_letter}2:{col_letter}{num_filas + 1})'
-                worksheet.write_formula(fila_totales, col_idx, formula, formula_format)
         
         # Freeze panes (fijar encabezado)
         worksheet.freeze_panes(1, 0)
         
-        print(f"[THREAD-EXCEL] Excel creado con {num_filas} filas y {num_cols} columnas")
+        print(f"[EXCEL] Excel creado con {num_filas} filas y {num_cols} columnas")
+    
+    output.seek(0)
     
     return {
-        'file_path': str(output_path),
-        'file_name': output_path.name,
+        'excel_bytes': output.getvalue(),
         'filas': num_filas,
         'columnas': num_cols,
         'tasas': {
@@ -1205,161 +1216,321 @@ def crear_excel_con_formulas(df: pd.DataFrame, output_path: Path) -> Dict[str, A
         'columnas_calculadas': [
             'Moneda Pago',
             'Cuenta Bancaria', 
-            'Dia de Pago',
+            'Día de pago',
             'Monto Final',
-            'Monto Capex Final',
-            'Monto Opex Final',
-            'AREA',
-            'Tipo Capex 2',
-            'Tipo Capex',
-            'Monto Capex ORD 2',
-            'Monto Capex EXT 3',
-            'Monto Capex ORD USD',
-            'Monto Capex EXT USD',
+            'MONTO CAPEX FINAL',
+            'MONTO OPEX FINAL',
+            'ÁREA',
+            'CAPEX',
+            'TIPO CAPEX',
+            'MONTO CAPEX ORD2',
+            'MONTO CAPEX EXT3',
+            'MONTO CAPEX ORD USD',
+            'MONTO CAPEX EXT USD',
             'Monto CAPEX USD',
             'Monto OPEX USD',
-            'Monto Total USD'
+            'MONTO TOTAL USD'
         ],
         'hojas_adicionales': ['Tasa', 'Areas']
     }
 
 
-def procesar_excel_thread(file_content: bytes, sheet_name: Optional[str], resultado: ResultadoThread):
+# ============================================================================
+# FUNCIÓN: MONTAR DATOS EN TEMPLATE (Paso 2)
+# ============================================================================
+
+def montar_data_en_template(df: pd.DataFrame, template_bytes: bytes, tasas: Dict[str, float] = None) -> bytes:
     """
-    Thread 2: Crea el Excel con la hoja 'Detalle' y fórmulas.
-    """
-    thread_name = threading.current_thread().name
-    print(f"[{thread_name}] Iniciando generación de Excel...")
+    Monta los datos del DataFrame procesado en la hoja 'Detalle' de un template Excel.
+    Usa openpyxl para abrir el template existente y escribir los datos.
+    Tambien escribe las tasas de cambio en celdas especificas de la hoja 'Detalle'.
     
-    try:
-        # Leer datos (mismo proceso que Thread 1 pero independiente)
-        df = leer_excel_con_cabezales(file_content, sheet_name)
-        df_limpio = limpiar_datos(df)
+    Args:
+        df: DataFrame procesado con los datos a montar
+        template_bytes: bytes del template Excel descargado de GCS
+        tasas: Diccionario con las tasas de cambio:
+            - tasa_ves_usd: Tasa martes (VES/USD)
+            - tasa_ves_usd_mas_5: Tasa jueves (VES/USD + 5)
+            - tasa_eur_usd: Tasa EUR/USD
+            - tasa_cop_usd: Tasa COP/USD
         
-        # Calcular columnas adicionales para tener los valores en el DataFrame
-        # Esto asegura que las columnas Monto Capex Final y Monto Opex Final aparezcan
-        df_procesado = calcular_columnas_adicionales(df_limpio)
-        
-        # Crear carpeta de resultados si no existe
-        RESULTADOS_PATH.mkdir(parents=True, exist_ok=True)
-        
-        # Generar nombre de archivo con timestamp
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_filename = f'Prioridades_Pago_Procesado_{timestamp}.xlsx'
-        output_path = RESULTADOS_PATH / output_filename
-        
-        # Crear Excel con el DataFrame procesado (incluye todas las columnas calculadas)
-        excel_info = crear_excel_con_formulas(df_procesado, output_path)
-        
-        resultado.excel_result = {
-            'success': True,
-            'excel_info': excel_info
-        }
-        
-        print(f"[{thread_name}] Excel generado: {output_path}")
-        
-    except Exception as e:
-        resultado.excel_error = str(e)
-        print(f"[{thread_name}] ERROR: {str(e)}")
-
-
-# ============================================================================
-# FUNCIÓN PRINCIPAL (MAIN)
-# ============================================================================
-
-def procesar_prioridades_pago(file_content: bytes, sheet_name: Optional[str] = None) -> dict:
+    Returns:
+        bytes del Excel final con los datos montados en 'Detalle'
     """
-    Función principal que procesa el archivo de Prioridades de Pago.
-    Usa dos threads paralelos:
-      - Thread 1: Procesa la data en DataFrame
-      - Thread 2: Crea el Excel con hoja 'Detalle' y fórmulas
+    print("[PASO2] Montando datos en template...")
+    
+    # Abrir template con openpyxl
+    wb = openpyxl.load_workbook(BytesIO(template_bytes))
+    
+    # Acceder a la hoja 'Detalle'
+    if 'Detalle' not in wb.sheetnames:
+        raise ValueError(
+            f"La hoja 'Detalle' no existe en el template. "
+            f"Hojas disponibles: {wb.sheetnames}"
+        )
+    
+    ws = wb['Detalle']
+    
+    # NO escribir cabezales: el template ya tiene sus propios cabezales.
+    # Solo escribir datos a partir de la columna D (columna 4) y fila 2.
+    COL_INICIO = 4  # Columna D
+    FILA_INICIO = 2  # Fila 2 (fila 1 son cabezales del template)
+    
+    for row_idx, (_, row) in enumerate(df.iterrows(), start=FILA_INICIO):
+        for col_offset, col_name in enumerate(df.columns):
+            value = row[col_name]
+            col_destino = COL_INICIO + col_offset  # D=4, E=5, F=6, ...
+            # Convertir valores numpy/pandas a tipos nativos de Python
+            if pd.isna(value):
+                ws.cell(row=row_idx, column=col_destino, value=None)
+            elif isinstance(value, (np.integer,)):
+                ws.cell(row=row_idx, column=col_destino, value=int(value))
+            elif isinstance(value, (np.floating,)):
+                ws.cell(row=row_idx, column=col_destino, value=float(value))
+            elif isinstance(value, pd.Timestamp):
+                ws.cell(row=row_idx, column=col_destino, value=value.to_pydatetime())
+            elif isinstance(value, datetime):
+                ws.cell(row=row_idx, column=col_destino, value=value)
+            else:
+                ws.cell(row=row_idx, column=col_destino, value=value)
+    
+    print(f"[PASO2] Datos montados: {len(df)} filas x {len(df.columns)} columnas desde columna D en hoja 'Detalle'")
+    
+    # ========================================================================
+    # ESCRIBIR TASAS DE CAMBIO EN CELDAS ESPECÍFICAS DE LA HOJA 'Detalle'
+    # AQ1 = Tasa martes (VES/USD)
+    # AT1 = Tasa jueves (VES/USD + 5)
+    # AW1 = Tasa EUR/USD
+    # AZ1 = Tasa COP/USD
+    # ========================================================================
+    if tasas:
+        tasa_martes = tasas.get('tasa_ves_usd', 0)
+        tasa_jueves = tasas.get('tasa_ves_usd_mas_5', 0)
+        tasa_eur = tasas.get('tasa_eur_usd', 0)
+        tasa_cop = tasas.get('tasa_cop_usd', 0)
+        
+        ws['AQ1'] = tasa_martes
+        ws['AT1'] = tasa_jueves
+        ws['AW1'] = tasa_eur
+        ws['AZ1'] = tasa_cop
+        
+        print(f"[PASO2] Tasas escritas en Detalle: AQ1={tasa_martes}, AT1={tasa_jueves}, AW1={tasa_eur}, AZ1={tasa_cop}")
+    else:
+        print("[PASO2] WARN: No se proporcionaron tasas para escribir en el template")
+    
+    # Guardar a BytesIO
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    wb.close()
+    
+    return output.getvalue()
+
+
+# ============================================================================
+# PASO 1: LIMPIAR Y DEVOLVER
+# ============================================================================
+
+def procesar_paso1(file_content: bytes, sheet_name: Optional[str] = None) -> dict:
+    """
+    Paso 1: Procesa/limpia el archivo Excel y lo devuelve.
+    NO sube a BigQuery. El archivo procesado se guarda en GCS /tmp desde api.py.
     
     Args:
         file_content: Contenido del archivo Excel en bytes
         sheet_name: Nombre de la hoja (opcional)
         
     Returns:
-        Diccionario con el resultado del procesamiento
+        Diccionario con:
+        - success: bool
+        - excel_bytes: bytes del Excel procesado
+        - excel_info: metadata del Excel generado
+        - stats: estadísticas del procesamiento
+        - data: datos en formato JSON serializable
     """
     print("=" * 70)
-    print("[MAIN] Iniciando procesamiento de Prioridades de Pago - Venezuela")
-    print("[MAIN] Modo: Threading paralelo (2 hilos)")
+    print("[PASO1] Iniciando procesamiento de Prioridades de Pago - Venezuela")
+    print("[PASO1] Modo: Limpiar y devolver (sin BigQuery)")
     print("=" * 70)
     
-    # Objeto para almacenar resultados de ambos threads
-    resultado = ResultadoThread()
-    
-    # Crear los threads
-    thread_dataframe = threading.Thread(
-        target=procesar_dataframe_thread,
-        args=(file_content, sheet_name, resultado),
-        name="THREAD-DF"
-    )
-    
-    thread_excel = threading.Thread(
-        target=procesar_excel_thread,
-        args=(file_content, sheet_name, resultado),
-        name="THREAD-EXCEL"
-    )
-    
-    print("[MAIN] Iniciando threads...")
-    
-    # Iniciar ambos threads
-    thread_dataframe.start()
-    thread_excel.start()
-    
-    # Esperar a que ambos terminen
-    thread_dataframe.join()
-    print("[MAIN] Thread DataFrame completado")
-    
-    thread_excel.join()
-    print("[MAIN] Thread Excel completado")
-    
-    print("=" * 70)
-    
-    # Verificar errores
-    errores = []
-    if resultado.dataframe_error:
-        errores.append(f"DataFrame: {resultado.dataframe_error}")
-    if resultado.excel_error:
-        errores.append(f"Excel: {resultado.excel_error}")
-    
-    if errores:
-        print(f"[MAIN] Procesamiento completado con errores: {errores}")
+    try:
+        # 1. Leer Excel con cabezales
+        df = leer_excel_con_cabezales(file_content, sheet_name)
+        
+        # 2. Limpiar datos
+        df_limpio = limpiar_datos(df)
+        
+        # 3. Calcular columnas adicionales
+        df_procesado = calcular_columnas_adicionales(df_limpio)
+        
+        # 4. Generar Excel procesado (en memoria)
+        excel_result = crear_excel_con_formulas(df_procesado)
+        
+        # 5. Calcular estadísticas
+        stats = {
+            'total_filas': len(df_procesado),
+            'total_columnas': len(df_procesado.columns),
+            'columnas': list(df_procesado.columns),
+            'montos': {},
+            'resumen_moneda_pago': df_procesado['Moneda Pago'].value_counts().to_dict() if 'Moneda Pago' in df_procesado.columns else {},
+            'resumen_dia_pago': df_procesado['Dia de Pago'].value_counts().to_dict() if 'Dia de Pago' in df_procesado.columns else {},
+            'tasas': {
+                'tasa_ves_usd': df_procesado.attrs.get('tasa_ves_usd', 0),
+                'tasa_ves_usd_mas_5': df_procesado.attrs.get('tasa_ves_usd_mas_5', 0),
+                'tasa_eur_usd': df_procesado.attrs.get('tasa_eur_usd', 0),
+                'tasa_cop_usd': df_procesado.attrs.get('tasa_cop_usd', 0),
+            }
+        }
+        
+        # Calcular sumas de montos
+        columnas_monto = ['Monto', 'Monto CAPEX EXT', 'Monto CAPEX ORD', 'Monto CADM']
+        for col in columnas_monto:
+            if col in df_procesado.columns:
+                try:
+                    stats['montos'][col] = float(pd.to_numeric(df_procesado[col], errors='coerce').sum())
+                except Exception:
+                    stats['montos'][col] = 0
+        
+        print(f"[PASO1] Procesamiento completado: {stats['total_filas']} filas")
+        
+        return {
+            'success': True,
+            'message': 'Archivo procesado correctamente (Paso 1)',
+            'excel_bytes': excel_result['excel_bytes'],
+            'excel_info': {
+                'filas': excel_result['filas'],
+                'columnas': excel_result['columnas'],
+                'tasas': excel_result['tasas'],
+                'columnas_calculadas': excel_result['columnas_calculadas'],
+                'hojas_adicionales': excel_result['hojas_adicionales'],
+            },
+            'stats': stats,
+            'data': dataframe_a_json_serializable(df_procesado)
+        }
+        
+    except Exception as e:
+        print(f"[PASO1] ERROR: {str(e)}")
         return {
             'success': False,
-            'error': 'Errores durante el procesamiento',
-            'detalles': errores,
+            'error': str(e),
+            'excel_bytes': None,
             'data': None
         }
-    
-    # Combinar resultados
-    print("[MAIN] Procesamiento completado exitosamente")
-    
-    # Obtener resultado de BigQuery si existe
-    bigquery_result = resultado.dataframe_result.get('bigquery', {})
-    
-    return {
-        'success': True,
-        'message': 'Archivo procesado correctamente con threading',
-        'dataframe': {
-            'stats': resultado.dataframe_result['stats'],
-            'filas_procesadas': resultado.dataframe_result['stats']['total_filas']
-        },
-        'excel': resultado.excel_result['excel_info'],
-        'bigquery': bigquery_result,
-        'data': resultado.dataframe_result['data']
-    }
 
 
 # ============================================================================
-# FUNCIÓN PARA OBTENER SOLO EL DATAFRAME
+# PASO 2: MONTAR EN TEMPLATE Y PREPARAR PARA BIGQUERY
+# ============================================================================
+
+def procesar_paso2(file_content: bytes, template_bytes: bytes, sheet_name: Optional[str] = None) -> dict:
+    """
+    Paso 2: Recibe el archivo procesado (del paso 1), lo monta en el template
+    de GCS y prepara el DataFrame para subir a BigQuery.
+    
+    Args:
+        file_content: Contenido del archivo Excel procesado (del paso 1, posiblemente editado)
+        template_bytes: bytes del template descargado de GCS
+        sheet_name: Nombre de la hoja del archivo procesado (opcional)
+        
+    Returns:
+        Diccionario con:
+        - success: bool
+        - excel_bytes: bytes del Excel final con template
+        - df: DataFrame para subir a BigQuery
+        - stats: estadísticas
+    """
+    print("=" * 70)
+    print("[PASO2] Iniciando montaje en template y preparación para BigQuery")
+    print("=" * 70)
+    
+    try:
+        # 1. Leer el archivo procesado
+        df = leer_excel_con_cabezales(file_content, sheet_name)
+        df_limpio = limpiar_datos(df)
+        
+        # Verificar si el archivo ya tiene las columnas calculadas (del paso 1)
+        # Usa 'ÁREA' (nombre nuevo después de renombrar en paso 1)
+        columnas_calculadas = ['Moneda Pago', 'Monto Final', 'ÁREA']
+        tiene_columnas = all(col in df_limpio.columns for col in columnas_calculadas)
+        
+        if tiene_columnas:
+            print("[PASO2] Archivo ya contiene columnas calculadas, usando datos existentes")
+            df_procesado = df_limpio
+            # Obtener tasas consultando las APIs (ya que attrs no se persisten en el Excel)
+            print("[PASO2] Obteniendo tasas de cambio para el template...")
+            from tasa import obtener_tasa_bolivar_dolar, obtener_tasa_euro_dolar, obtener_tasa_peso_colombiano_dolar
+            
+            tasa_info = obtener_tasa_bolivar_dolar()
+            tasa_ves_usd = float(tasa_info['tasa']) if tasa_info['success'] and tasa_info['tasa'] else 36.50
+            tasa_ves_usd_mas_5 = tasa_ves_usd + MARGEN_TASA_JUEVES
+            
+            tasa_eur_info = obtener_tasa_euro_dolar()
+            tasa_eur_usd = float(tasa_eur_info['tasa']) if tasa_eur_info['success'] and tasa_eur_info['tasa'] else 1.10
+            
+            tasa_cop_info = obtener_tasa_peso_colombiano_dolar()
+            tasa_cop_usd = float(tasa_cop_info['tasa']) if tasa_cop_info['success'] and tasa_cop_info['tasa'] else 0.00024
+        else:
+            print("[PASO2] Recalculando columnas adicionales...")
+            df_procesado = calcular_columnas_adicionales(df_limpio)
+            df_procesado = renombrar_columnas(df_procesado)
+            # Obtener tasas desde los attrs del DataFrame (fueron guardadas por calcular_columnas_adicionales)
+            tasa_ves_usd = df_procesado.attrs.get('tasa_ves_usd', 0)
+            tasa_ves_usd_mas_5 = df_procesado.attrs.get('tasa_ves_usd_mas_5', 0)
+            tasa_eur_usd = df_procesado.attrs.get('tasa_eur_usd', 0)
+            tasa_cop_usd = df_procesado.attrs.get('tasa_cop_usd', 0)
+        
+        # Preparar diccionario de tasas para el template
+        tasas = {
+            'tasa_ves_usd': tasa_ves_usd,
+            'tasa_ves_usd_mas_5': tasa_ves_usd_mas_5,
+            'tasa_eur_usd': tasa_eur_usd,
+            'tasa_cop_usd': tasa_cop_usd,
+        }
+        
+        # Guardar tasas en attrs del DataFrame para BigQuery
+        df_procesado.attrs['tasa_ves_usd'] = tasa_ves_usd
+        df_procesado.attrs['tasa_ves_usd_mas_5'] = tasa_ves_usd_mas_5
+        df_procesado.attrs['tasa_eur_usd'] = tasa_eur_usd
+        df_procesado.attrs['tasa_cop_usd'] = tasa_cop_usd
+        
+        # 2. Montar datos en el template (incluyendo tasas en celdas AQ1, AT1, AW1, AZ1)
+        excel_bytes = montar_data_en_template(df_procesado, template_bytes, tasas)
+        
+        # 3. Estadísticas
+        stats = {
+            'total_filas': len(df_procesado),
+            'total_columnas': len(df_procesado.columns),
+            'columnas': list(df_procesado.columns),
+        }
+        
+        print(f"[PASO2] Procesamiento completado: {stats['total_filas']} filas montadas en template")
+        
+        return {
+            'success': True,
+            'message': 'Datos montados en template correctamente (Paso 2)',
+            'excel_bytes': excel_bytes,
+            'df': df_procesado,
+            'stats': stats
+        }
+        
+    except Exception as e:
+        print(f"[PASO2] ERROR: {str(e)}")
+        return {
+            'success': False,
+            'error': str(e),
+            'excel_bytes': None,
+            'df': None,
+            'stats': None
+        }
+
+
+# ============================================================================
+# FUNCIÓN AUXILIAR: OBTENER SOLO EL DATAFRAME
 # ============================================================================
 
 def obtener_dataframe(file_content: bytes, sheet_name: Optional[str] = None) -> pd.DataFrame:
     """
     Obtiene el DataFrame procesado y limpio, listo para usar.
-    Esta función NO usa threading, es para uso directo.
     
     Args:
         file_content: Contenido del archivo Excel en bytes

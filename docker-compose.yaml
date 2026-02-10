@@ -13,6 +13,7 @@ services:
       - BIGQUERY_DATASET=${BIGQUERY_DATASET}
       - BIGQUERY_TABLE=${BIGQUERY_TABLE}
       - GOOGLE_SHEET_ID=${GOOGLE_SHEET_ID}
+      - GCS_TEMPLATE_PATH=${GCS_TEMPLATE_PATH}
       - PYTHONUNBUFFERED=1
     volumes:
       # Montar código fuente para desarrollo
