@@ -9,6 +9,7 @@ from datetime import datetime
 
 import pytz
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from dotenv import load_dotenv
 
 # Google Cloud imports
@@ -39,6 +40,7 @@ TZ_CARACAS = pytz.timezone('America/Caracas')
 CREDENTIALS_PATH = Path(__file__).parent.parent / 'credentials.json'
 
 app = Flask(__name__)
+CORS(app)
 
 
 def get_credentials():
